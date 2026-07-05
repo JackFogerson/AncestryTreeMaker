@@ -23,9 +23,8 @@ class AncestryApp:
         
         self.tree = {}  
         self.plus_buttons = {}  
-        self.pie_centers = {} # Tracks pie coordinates for click detection
+        self.pie_centers = {} 
         
-        # Pan and Zoom tracking state variables
         self.is_dragging = False
         self.press_x = None
         self.press_y = None
@@ -55,7 +54,6 @@ class AncestryApp:
         self.canvas = FigureCanvasTkAgg(self.fig, master=self.plot_panel)
         self.canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
         
-        # Connect pan, zoom, and selection interactions
         self.fig.canvas.mpl_connect('button_press_event', self.on_press)
         self.fig.canvas.mpl_connect('button_release_event', self.on_release)
         self.fig.canvas.mpl_connect('motion_notify_event', self.on_drag)
@@ -142,7 +140,6 @@ class AncestryApp:
         return positions
 
     def refresh_plot(self):
-        # Save previous viewport layout scale constraints if they exist to keep zoom level consistent
         cur_xlim = self.ax.get_xlim() if self.press_x is not None else None
         cur_ylim = self.ax.get_ylim() if self.press_x is not None else None
 
@@ -159,15 +156,16 @@ class AncestryApp:
             self.canvas.draw()
             return
 
+        # Draw relationship lines with clip_on=False to fix edge vanishing glitch
         for name, node in self.tree.items():
             if name in positions:
                 x, y = positions[name]
                 if node.father in positions:
                     fx, fy = positions[node.father]
-                    self.ax.plot([x, fx], [y, fy], color='#94a3b8', linestyle='-', linewidth=2, zorder=1)
+                    self.ax.plot([x, fx], [y, fy], color='#94a3b8', linestyle='-', linewidth=2, zorder=1, clip_on=False)
                 if node.mother in positions:
                     mx, my = positions[node.mother]
-                    self.ax.plot([x, mx], [y, my], color='#94a3b8', linestyle='-', linewidth=2, zorder=1)
+                    self.ax.plot([x, mx], [y, my], color='#94a3b8', linestyle='-', linewidth=2, zorder=1, clip_on=False)
 
         for name, (x, y) in positions.items():
             node = self.tree[name]
@@ -177,14 +175,14 @@ class AncestryApp:
             inset_ax.zorder = 2
             
             if node.computed_ethnicities:
-                # Clean clean-labels inside small embedded pie graphics to fit spacing layout rules
-                labels = [f"{k}\n{v:.0f}%" for k, v in node.computed_ethnicities.items()]
+                # Upgraded label formatting string to :.2f for double-digit float depth
+                labels = [f"{k}\n{v:.2f}%" for k, v in node.computed_ethnicities.items()]
                 values = list(node.computed_ethnicities.values())
                 pie_colors = [self.ethnicity_colors.get(k, '#e2e8f0') for k in node.computed_ethnicities.keys()]
                 inset_ax.pie(values, labels=labels, colors=pie_colors, textprops={'fontsize': 6, 'weight': 'bold'}, radius=1.0)
             else:
                 inset_ax.pie([1], colors=['#e2e8f0'], radius=1.0)
-                inset_ax.text(0, 0, "Unknown", ha='center', va='center', fontsize=7, color='#64748b', weight='bold')
+                inset_ax.text(0, 0, "Unknown\n100.00%", ha='center', va='center', fontsize=7, color='#64748b', weight='bold')
                 
             inset_ax.axis('equal')
             
@@ -211,25 +209,21 @@ class AncestryApp:
         
         self.canvas.draw()
 
-    # Dynamic Canvas Pan-and-Zoom Event Triggers
     def on_press(self, event):
         if event.xdata is None or event.ydata is None:
             return
             
-        # 1. First, check if user targeted an interactive '+' network button
         click_radius = 0.25
         for name, (bx, by) in self.plus_buttons.items():
             if ((event.xdata - bx)**2 + (event.ydata - by)**2)**0.5 <= click_radius:
                 self.open_parent_dialog(name)
                 return
 
-        # 2. Check if user clicked directly into a person's Pie Chart graphic area
         for name, (px, py, pradius) in self.pie_centers.items():
             if ((event.xdata - px)**2 + (event.ydata - py)**2)**0.5 <= pradius:
                 self.display_ethnic_breakdown(name)
                 return
 
-        # 3. If clicking standard canvas space background context layer, initialize viewport sliding pan operation
         if event.button == 1:
             self.is_dragging = True
             self.press_x = event.xdata
@@ -270,7 +264,6 @@ class AncestryApp:
         self.canvas.draw()
 
     def display_ethnic_breakdown(self, person_name):
-        """Generates a separate visual popup displaying cleanly sorted percentage metrics."""
         node = self.tree[person_name]
         breakdown_window = tk.Toplevel(self.root)
         breakdown_window.title(f"Composition Breakdown: {person_name}")
@@ -284,10 +277,8 @@ class AncestryApp:
         frame_list = tk.Frame(breakdown_window, bg="white", bd=1, relief=tk.SOLID, padx=15, pady=15)
         frame_list.pack(fill=tk.BOTH, expand=True, padx=25, pady=(0, 25))
         
-        # Pull profile dataset calculations
         data = node.computed_ethnicities or {"Unknown": 100.0}
         
-        # Sort processing: Extract Unknown item if it exists, sort valid properties highest to lowest, append Unknown to tail
         unknown_val = data.get("Unknown", None)
         valid_items = [(k, v) for k, v in data.items() if k != "Unknown"]
         valid_items.sort(key=lambda item: item[1], reverse=True)
@@ -302,14 +293,14 @@ class AncestryApp:
             row = tk.Frame(frame_list, bg="white", pady=6)
             row.pack(fill=tk.X)
             
-            # Colored identity block element indicators
             color_hex = self.ethnicity_colors.get(eth, "#cbd5e1")
             color_chip = tk.Frame(row, width=14, height=14, bg=color_hex, bd=1, relief=tk.SOLID)
             color_chip.pack(side=tk.LEFT, padx=(0, 10))
             color_chip.pack_propagate(False)
             
             tk.Label(row, text=eth, font=("Arial", 11, "bold" if eth != "Unknown" else "normal"), fg="#334155" if eth != "Unknown" else "#64748b", bg="white").pack(side=tk.LEFT)
-            tk.Label(row, text=f"{pct:.1f}%", font=("Arial", 11, "bold"), fg="#0f172a", bg="white").pack(side=tk.RIGHT)
+            # Display breakdown metrics up to 2 decimal points precisely (:.2f%)
+            tk.Label(row, text=f"{pct:.2f}%", font=("Arial", 11, "bold"), fg="#0f172a", bg="white").pack(side=tk.RIGHT)
 
     def open_parent_dialog(self, person_name):
         dialog = tk.Toplevel(self.root)
@@ -457,7 +448,7 @@ class AncestryApp:
             self.tree.clear()
             self.ethnicity_options.clear()
             self.ethnicity_colors.clear()
-            self.press_x = None  # Reset coordinate locks
+            self.press_x = None  
             self.initialize_default_tree()
 
 if __name__ == "__main__":

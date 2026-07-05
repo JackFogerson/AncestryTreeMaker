@@ -129,13 +129,14 @@ class AncestryApp:
             positions[node_name] = (x, y)
             
             node = self.tree[node_name]
+            # Space out parents cleanly centered above the child node point
             if node.father:
-                assign_coords(node.father, x - horizontal_spacing, y + 1.5, horizontal_spacing / 1.8)
+                assign_coords(node.father, x - horizontal_spacing, y + 2.0, horizontal_spacing / 1.7)
             if node.mother:
-                assign_coords(node.mother, x + horizontal_spacing, y + 1.5, horizontal_spacing / 1.8)
+                assign_coords(node.mother, x + horizontal_spacing, y + 2.0, horizontal_spacing / 1.7)
 
         for i, root in enumerate(roots):
-            assign_coords(root, x=i * 6.0, y=0, horizontal_spacing=2.5)
+            assign_coords(root, x=i * 8.0, y=0, horizontal_spacing=3.0)
             
         return positions
 
@@ -145,7 +146,7 @@ class AncestryApp:
 
         self.calculate_inheritance()  
         self.ax.clear()
-        self.ax.set_title("Left-Click & Drag background to Pan | Scroll Wheel to Zoom | Click a Pie for breakdown", fontsize=11, weight='bold', pad=10)
+        self.ax.set_title("Traditional Orthogonal Bracket Layout | Drag Background to Pan | Scroll to Zoom", fontsize=11, weight='bold', pad=10)
         self.ax.axis('off')
         
         positions = self.calculate_positions()
@@ -156,14 +157,33 @@ class AncestryApp:
             self.canvas.draw()
             return
 
-        # Draw relationship lines with clip_on=False to fix edge vanishing glitch
+        # Upgraded Orthogonal/Square Bracket Line Tracing Engine matching image_003f7b.jpg
         for name, node in self.tree.items():
             if name in positions:
                 x, y = positions[name]
-                if node.father in positions:
+                has_father = node.father in positions
+                has_mother = node.mother in positions
+                
+                # Case 1: Both parents present (Construct classic horizontal bridging bar with center dropdown stem)
+                if has_father and has_mother:
+                    fx, fy = positions[node.father]
+                    mx, my = positions[node.mother]
+                    
+                    mid_y = y + 1.0  # Sideways horizontal split height
+                    
+                    # Vertical stem straight out of child up to the horizontal bracket line
+                    self.ax.plot([x, x], [y, mid_y], color='#10b981', linestyle='-', linewidth=2.5, zorder=1, clip_on=False)
+                    # Horizontal bridging line tracking parent span bounds
+                    self.ax.plot([fx, mx], [mid_y, mid_y], color='#10b981', linestyle='-', linewidth=2.5, zorder=1, clip_on=False)
+                    # Verticals dropping directly down out of father and mother nodes to meet the bridge line
+                    self.ax.plot([fx, fx], [fy, mid_y], color='#10b981', linestyle='-', linewidth=2.5, zorder=1, clip_on=False)
+                    self.ax.plot([mx, mx], [my, mid_y], color='#10b981', linestyle='-', linewidth=2.5, zorder=1, clip_on=False)
+                    
+                # Case 2: Only one parent exists (Clean orthogonal linear straight path layout)
+                elif has_father:
                     fx, fy = positions[node.father]
                     self.ax.plot([x, fx], [y, fy], color='#94a3b8', linestyle='-', linewidth=2, zorder=1, clip_on=False)
-                if node.mother in positions:
+                elif has_mother:
                     mx, my = positions[node.mother]
                     self.ax.plot([x, mx], [y, my], color='#94a3b8', linestyle='-', linewidth=2, zorder=1, clip_on=False)
 
@@ -175,7 +195,6 @@ class AncestryApp:
             inset_ax.zorder = 2
             
             if node.computed_ethnicities:
-                # Upgraded label formatting string to :.2f for double-digit float depth
                 labels = [f"{k}\n{v:.2f}%" for k, v in node.computed_ethnicities.items()]
                 values = list(node.computed_ethnicities.values())
                 pie_colors = [self.ethnicity_colors.get(k, '#e2e8f0') for k in node.computed_ethnicities.keys()]
@@ -204,8 +223,8 @@ class AncestryApp:
         else:
             all_x = [pt[0] for pt in positions.values()]
             all_y = [pt[1] for pt in positions.values()]
-            self.ax.set_xlim(min(all_x) - 2.0, max(all_x) + 2.0)
-            self.ax.set_ylim(min(all_y) - 1.2, max(all_y) + 2.2)
+            self.ax.set_xlim(min(all_x) - 3.0, max(all_x) + 3.0)
+            self.ax.set_ylim(min(all_y) - 1.5, max(all_y) + 2.5)
         
         self.canvas.draw()
 
@@ -299,7 +318,6 @@ class AncestryApp:
             color_chip.pack_propagate(False)
             
             tk.Label(row, text=eth, font=("Arial", 11, "bold" if eth != "Unknown" else "normal"), fg="#334155" if eth != "Unknown" else "#64748b", bg="white").pack(side=tk.LEFT)
-            # Display breakdown metrics up to 2 decimal points precisely (:.2f%)
             tk.Label(row, text=f"{pct:.2f}%", font=("Arial", 11, "bold"), fg="#0f172a", bg="white").pack(side=tk.RIGHT)
 
     def open_parent_dialog(self, person_name):

@@ -1,5 +1,5 @@
 import tkinter as tk
-from tkinter import messagebox, filedialog
+from tkinter import messagebox, filedialog, simpledialog
 import json
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
@@ -7,12 +7,12 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 class AncestorNode:
     def __init__(self, name, base_ethnicities=None, father=None, mother=None):
         self.name = name
-        # Base ethnicities explicitly declared for THIS specific person (e.g., ["English"])
+        # Base ethnicities explicitly declared for THIS specific person *only if they are a root*
         self.base_ethnicities = base_ethnicities if base_ethnicities else []
         self.father = father  # Name string
         self.mother = mother  # Name string
         
-        # Computed dynamic dict format: {"English": 50.0, "French": 50.0}
+        # Computed dynamic dict format: {"English": 50.0, "German": 50.0}
         self.computed_ethnicities = {}
 
 class AncestryApp:
@@ -21,7 +21,7 @@ class AncestryApp:
         self.root.title("Interactive Ancestry Pie-Chart Tree")
         self.root.geometry("1200x800")
         
-        # Master list of available ethnicities to choose from
+        # Master list of available ethnicities to choose from (Can be expanded dynamically)
         self.ethnicity_options = ["English", "Irish", "German", "French", "Italian", "Scottish", "Welsh", "Native American", "African", "Asian", "Other"]
         
         self.tree = {}  
@@ -58,43 +58,66 @@ class AncestryApp:
         self.fig.canvas.mpl_connect('button_press_event', self.on_canvas_click)
 
     def calculate_inheritance(self):
-        """Recursively calculates dynamic ancestral inheritance down the tree structure."""
+        """Calculates inheritance recursively. Parents completely override child's baseline traits."""
         # Reset current computed states
         for node in self.tree.values():
             node.computed_ethnicities = {}
 
-        # Helper to find children of a parent
-        def get_children(parent_name):
-            return [name for name, node in self.tree.items() if node.father == parent_name or node.mother == parent_name]
-
-        # Step 1: Assign 100% distribution split for nodes with designated base ethnicities
+        # We need to compute from the top of the tree downwards.
+        # Let's find nodes that have no parents listed *within* the tree workspace.
+        roots = []
         for name, node in self.tree.items():
+            if not node.father and not node.mother:
+                roots.append(name)
+                
+        # For safety fallback loops if a circular link occurs
+        if not roots and self.tree:
+            roots = [list(self.tree.keys())[0]]
+
+        # Process each individual branch path systematically
+        for root_name in roots:
+            self._compute_node_heritage(root_name, visited=set())
+
+    def _compute_node_heritage(self, name, visited):
+        if name in visited or name not in self.tree:
+            return
+        visited.add(name)
+        
+        node = self.tree[name]
+        
+        # Condition A: If the person has parents, their profile is completely derived from them
+        if node.father or node.mother:
+            # First, ensure parent values are fully calculated by recursing upstream
+            if node.father:
+                self._compute_node_heritage(node.father, visited)
+            if node.mother:
+                self._compute_node_heritage(node.mother, visited)
+                
+            father_dna = self.tree[node.father].computed_ethnicities if node.father and node.father in self.tree else {}
+            mother_dna = self.tree[node.mother].computed_ethnicities if node.mother and node.mother in self.tree else {}
+            
+            # Combine profiles: 50% from Father, 50% from Mother
+            combined = {}
+            for eth, pct in father_dna.items():
+                combined[eth] = combined.get(eth, 0.0) + (pct * 0.5)
+            for eth, pct in mother_dna.items():
+                combined[eth] = combined.get(eth, 0.0) + (pct * 0.5)
+                
+            node.computed_ethnicities = combined
+            
+        # Condition B: If they are a true root ancestry block, divide up their user selections evenly to equal 100%
+        else:
             if node.base_ethnicities:
                 count = len(node.base_ethnicities)
                 for eth in node.base_ethnicities:
-                    node.computed_ethnicities[eth] = node.computed_ethnicities.get(eth, 0.0) + (100.0 / count)
+                    node.computed_ethnicities[eth] = 100.0 / count
+            else:
+                node.computed_ethnicities = {}
 
-        # Step 2: Propagate values downwards through generations iteratively
-        # Find roots (top level ancestors with no parents in tree)
-        for name, node in self.tree.items():
-            if not node.father and not node.mother:
-                self._push_down_heritage(name)
-
-    def _push_down_heritage(self, parent_name):
-        """Passes 50% of the parent's current total computed background profile down to children."""
-        parent_node = self.tree[parent_name]
-        if not parent_node.computed_ethnicities:
-            return
-
-        # Find any direct children linked to this parent
+        # Force push changes down to any registered children in the working tree
         for child_name, child_node in self.tree.items():
-            if child_node.father == parent_name or child_node.mother == parent_name:
-                # Add half of parent's percentage weight directly to the child's calculation
-                for eth, pct in parent_node.computed_ethnicities.items():
-                    child_node.computed_ethnicities[eth] = child_node.computed_ethnicities.get(eth, 0.0) + (pct * 0.5)
-                
-                # Recurse downstream
-                self._push_down_heritage(child_name)
+            if child_node.father == name or child_node.mother == name:
+                self._compute_node_heritage(child_name, visited.copy())
 
     def calculate_positions(self):
         positions = {}
@@ -106,7 +129,6 @@ class AncestryApp:
             if node.father: children_names.add(node.father)
             if node.mother: children_names.add(node.mother)
             
-        # Jack Fogerson or absolute roots are mapped at bottom level index coordinate zero
         roots = [name for name in self.tree if name not in children_names]
         if not roots:  
             roots = [list(self.tree.keys())[0]]
@@ -128,7 +150,7 @@ class AncestryApp:
         return positions
 
     def refresh_plot(self):
-        self.calculate_inheritance()  # Process latest generational splits prior to painting canvas
+        self.calculate_inheritance()  # Process latest dynamic inheritance calculations
         self.ax.clear()
         self.ax.set_title("Ancestry Tree (Click '+' above a person to manage family links)", fontsize=12, weight='bold', pad=10)
         self.ax.axis('off')
@@ -200,56 +222,78 @@ class AncestryApp:
                 break
 
     def open_parent_dialog(self, person_name):
-        """Interactive Management Window for updating links and base heritage traits."""
+        """Interactive Window for updating links and raw heritage traits."""
         dialog = tk.Toplevel(self.root)
         dialog.title(f"Manage Profile: {person_name}")
-        dialog.geometry("450x550")
+        dialog.geometry("480x620")
         dialog.transient(self.root)
         dialog.grab_set()
         
         node = self.tree[person_name]
         
-        tk.Label(dialog, text=f"Editing Family Network for:", font=("Arial", 10)).pack(pady=(15,2))
-        tk.Label(dialog, text=person_name, font=("Arial", 14, "bold"), fg="#047857").pack(pady=(0,15))
+        tk.Label(dialog, text=f"Editing Family Network for:", font=("Arial", 10)).pack(pady=(12,2))
+        tk.Label(dialog, text=person_name, font=("Arial", 14, "bold"), fg="#047857").pack(pady=(0,12))
         
         # Parent Input Forms
         tk.Label(dialog, text="Father's Full Name:", font=("Arial", 10, "bold")).pack(anchor=tk.W, padx=30)
         f_entry = tk.Entry(dialog, width=40, font=("Arial", 10))
         f_entry.insert(0, node.father or "")
-        f_entry.pack(padx=30, pady=(0, 12))
+        f_entry.pack(padx=30, pady=(0, 10))
         
         tk.Label(dialog, text="Mother's Full Name:", font=("Arial", 10, "bold")).pack(anchor=tk.W, padx=30)
         m_entry = tk.Entry(dialog, width=40, font=("Arial", 10))
         m_entry.insert(0, node.mother or "")
-        m_entry.pack(padx=30, pady=(0, 15))
+        m_entry.pack(padx=30, pady=(0, 12))
+        
+        # Custom Ethnicity Insertion Area
+        custom_frame = tk.Frame(dialog)
+        custom_frame.pack(fill=tk.X, padx=30, pady=(0, 10))
+        tk.Label(custom_frame, text="Add New Ethnicity Option:", font=("Arial", 10, "bold")).pack(side=tk.LEFT)
+        new_eth_entry = tk.Entry(custom_frame, width=15, font=("Arial", 10))
+        new_eth_entry.pack(side=tk.LEFT, padx=5)
         
         # Ethnicity Checklist Selection Frame
-        tk.Label(dialog, text="Select This Ancestor's Primary Ethnicity Backgrounds:", font=("Arial", 10, "bold")).pack(anchor=tk.W, padx=30, pady=(5,5))
+        tk.Label(dialog, text="Select Origins (Only applies if parents are left blank):", font=("Arial", 10, "bold")).pack(anchor=tk.W, padx=30, pady=(0,3))
         
-        checkbox_frame = tk.LabelFrame(dialog, text=" Available Origins (Check all that apply) ", padx=10, pady=10)
-        checkbox_frame.pack(fill=tk.BOTH, expand=True, padx=30, pady=(0,15))
+        checkbox_frame = tk.LabelFrame(dialog, text=" Available Options ", padx=10, pady=10)
+        checkbox_frame.pack(fill=tk.BOTH, expand=True, padx=30, pady=(0,10))
         
-        # Grid organization layout strategy for options display
         vars_dict = {}
-        for idx, ethnicity in enumerate(self.ethnicity_options):
-            var = tk.BooleanVar(value=(ethnicity in node.base_ethnicities))
-            vars_dict[ethnicity] = var
-            cb = tk.Checkbutton(checkbox_frame, text=ethnicity, variable=var, font=("Arial", 9))
-            cb.grid(row=idx // 2, column=idx % 2, sticky=tk.W, padx=10, pady=3)
+        def render_checkboxes():
+            # Clear existing framework inside frame widget
+            for widget in checkbox_frame.winfo_children():
+                widget.destroy()
+            vars_dict.clear()
+            for idx, ethnicity in enumerate(self.ethnicity_options):
+                var = tk.BooleanVar(value=(ethnicity in node.base_ethnicities))
+                vars_dict[ethnicity] = var
+                cb = tk.Checkbutton(checkbox_frame, text=ethnicity, variable=var, font=("Arial", 9))
+                cb.grid(row=idx // 2, column=idx % 2, sticky=tk.W, padx=10, pady=2)
+
+        def add_custom_ethnicity():
+            new_eth = new_eth_entry.get().strip().title()
+            if new_eth and new_eth not in self.ethnicity_options:
+                self.ethnicity_options.append(new_eth)
+                new_eth_entry.delete(0, tk.END)
+                render_checkboxes()
+            elif new_eth in self.ethnicity_options:
+                messagebox.showwarning("Notice", f"'{new_eth}' is already an option.")
+
+        tk.Button(custom_frame, text="Add", command=add_custom_ethnicity, bg="#cbd5e1", font=("Arial", 9, "bold")).pack(side=tk.LEFT)
+        render_checkboxes()
 
         def save_close():
             father = f_entry.get().strip() or None
             mother = m_entry.get().strip() or None
             
-            # Extract checked elements back to list structures
             selected_ethnicities = [eth for eth, var in vars_dict.items() if var.get()]
             
-            # Update values inside active memory storage trees
+            # Update current element values
             node.father = father
             node.mother = mother
             node.base_ethnicities = selected_ethnicities
             
-            # Initialize blank tracking shells for newly declared upstream components
+            # Register missing placeholder shells for new parent chains
             if father and father not in self.tree:
                 self.tree[father] = AncestorNode(father)
             if mother and mother not in self.tree:
@@ -258,15 +302,18 @@ class AncestryApp:
             dialog.destroy()
             self.refresh_plot()
         
-        tk.Button(dialog, text="Save & Update Tree", command=save_close, bg="#10b981", fg="white", font=("Arial", 11, "bold"), width=20, height=2).pack(pady=15)
+        tk.Button(dialog, text="Save & Update Tree", command=save_close, bg="#10b981", fg="white", font=("Arial", 11, "bold"), width=20, height=2).pack(pady=10)
 
     def save_tree(self):
         file_path = filedialog.asksaveasfilename(defaultextension=".json", filetypes=[("JSON Files", "*.json")])
         if not file_path: return
             
-        serializable_data = {}
+        serializable_data = {
+            "master_ethnicities": self.ethnicity_options,
+            "nodes": {}
+        }
         for name, node in self.tree.items():
-            serializable_data[name] = {
+            serializable_data["nodes"][name] = {
                 "name": node.name,
                 "base_ethnicities": node.base_ethnicities,
                 "father": node.father,
@@ -275,7 +322,7 @@ class AncestryApp:
             
         with open(file_path, 'w') as f:
             json.dump(serializable_data, f, indent=4)
-        messagebox.showinfo("Saved", "Tree configuration data safely exported.")
+        messagebox.showinfo("Saved", "Tree configuration safely exported.")
 
     def load_tree(self):
         file_path = filedialog.askopenfilename(filetypes=[("JSON Files", "*.json")])
@@ -285,8 +332,15 @@ class AncestryApp:
             raw_data = json.load(f)
             
         self.tree.clear()
-        for name, data in raw_data.items():
-            # Support backwards legacy load file mapping variables smoothly if keys match old files
+        
+        # Load custom master categories if they exist in file architecture
+        if "master_ethnicities" in raw_data:
+            self.ethnicity_options = raw_data["master_ethnicities"]
+            nodes_source = raw_data["nodes"]
+        else:
+            nodes_source = raw_data  # Support structural backward compatibility
+            
+        for name, data in nodes_source.items():
             base_eth = data.get("base_ethnicities", list(data.get("ethnicities", {}).keys()))
             self.tree[name] = AncestorNode(
                 name=data["name"],

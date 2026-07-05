@@ -1,5 +1,5 @@
 import tkinter as tk
-from tkinter import messagebox, filedialog, simpledialog
+from tkinter import messagebox, filedialog, colorchooser
 import json
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
@@ -12,7 +12,7 @@ class AncestorNode:
         self.father = father  # Name string
         self.mother = mother  # Name string
         
-        # Computed dynamic dict format: {"English": 50.0, "German": 50.0}
+        # Computed dynamic dict format: {"German": 50.0, "Unknown": 50.0}
         self.computed_ethnicities = {}
 
 class AncestryApp:
@@ -21,8 +21,9 @@ class AncestryApp:
         self.root.title("Interactive Ancestry Pie-Chart Tree")
         self.root.geometry("1200x800")
         
-        # Master list of available ethnicities to choose from (Can be expanded dynamically)
-        self.ethnicity_options = ["English", "Irish", "German", "French", "Italian", "Scottish", "Welsh", "Native American", "African", "Asian", "Other"]
+        # Completely blank initial ethnicity settings to match user constraints
+        self.ethnicity_options = []
+        self.ethnicity_colors = {} # Maps ethnicity name string -> hex color string
         
         self.tree = {}  
         self.plus_buttons = {}  
@@ -37,7 +38,7 @@ class AncestryApp:
             self.refresh_plot()
 
     def setup_ui(self):
-        # Left Control Panel (Only containing configuration management actions now)
+        # Left Control Panel (Strictly containing workspace and profile actions)
         control_panel = tk.Frame(self.root, width=250, padx=15, pady=15, bg="#f8fafc")
         control_panel.pack(side=tk.LEFT, fill=tk.Y)
         
@@ -58,23 +59,19 @@ class AncestryApp:
         self.fig.canvas.mpl_connect('button_press_event', self.on_canvas_click)
 
     def calculate_inheritance(self):
-        """Calculates inheritance recursively. Parents completely override child's baseline traits."""
+        """Calculates inheritance recursively. Handles missing values cleanly via 'Unknown' states."""
         # Reset current computed states
         for node in self.tree.values():
             node.computed_ethnicities = {}
 
-        # We need to compute from the top of the tree downwards.
-        # Let's find nodes that have no parents listed *within* the tree workspace.
         roots = []
         for name, node in self.tree.items():
             if not node.father and not node.mother:
                 roots.append(name)
                 
-        # For safety fallback loops if a circular link occurs
         if not roots and self.tree:
             roots = [list(self.tree.keys())[0]]
 
-        # Process each individual branch path systematically
         for root_name in roots:
             self._compute_node_heritage(root_name, visited=set())
 
@@ -85,18 +82,16 @@ class AncestryApp:
         
         node = self.tree[name]
         
-        # Condition A: If the person has parents, their profile is completely derived from them
+        # Condition A: If the person has parents, combine profiles precisely at 50% split each
         if node.father or node.mother:
-            # First, ensure parent values are fully calculated by recursing upstream
             if node.father:
                 self._compute_node_heritage(node.father, visited)
             if node.mother:
                 self._compute_node_heritage(node.mother, visited)
                 
-            father_dna = self.tree[node.father].computed_ethnicities if node.father and node.father in self.tree else {}
-            mother_dna = self.tree[node.mother].computed_ethnicities if node.mother and node.mother in self.tree else {}
+            father_dna = self.tree[node.father].computed_ethnicities if node.father and node.father in self.tree else {"Unknown": 100.0}
+            mother_dna = self.tree[node.mother].computed_ethnicities if node.mother and node.mother in self.tree else {"Unknown": 100.0}
             
-            # Combine profiles: 50% from Father, 50% from Mother
             combined = {}
             for eth, pct in father_dna.items():
                 combined[eth] = combined.get(eth, 0.0) + (pct * 0.5)
@@ -105,16 +100,15 @@ class AncestryApp:
                 
             node.computed_ethnicities = combined
             
-        # Condition B: If they are a true root ancestry block, divide up their user selections evenly to equal 100%
+        # Condition B: Root block calculation configuration profile
         else:
             if node.base_ethnicities:
                 count = len(node.base_ethnicities)
                 for eth in node.base_ethnicities:
                     node.computed_ethnicities[eth] = 100.0 / count
             else:
-                node.computed_ethnicities = {}
+                node.computed_ethnicities = {"Unknown": 100.0}
 
-        # Force push changes down to any registered children in the working tree
         for child_name, child_node in self.tree.items():
             if child_node.father == name or child_node.mother == name:
                 self._compute_node_heritage(child_name, visited.copy())
@@ -150,7 +144,7 @@ class AncestryApp:
         return positions
 
     def refresh_plot(self):
-        self.calculate_inheritance()  # Process latest dynamic inheritance calculations
+        self.calculate_inheritance()  
         self.ax.clear()
         self.ax.set_title("Ancestry Tree (Click '+' above a person to manage family links)", fontsize=12, weight='bold', pad=10)
         self.ax.axis('off')
@@ -184,10 +178,14 @@ class AncestryApp:
             if node.computed_ethnicities:
                 labels = [f"{k}\n{v:.1f}%" for k, v in node.computed_ethnicities.items()]
                 values = list(node.computed_ethnicities.values())
-                inset_ax.pie(values, labels=labels, textprops={'fontsize': 6, 'weight': 'bold'}, radius=1.0)
+                
+                # Fetch specific custom hex colors, fall back to soft gray for 'Unknown' fields
+                pie_colors = [self.ethnicity_colors.get(k, '#e2e8f0') for k in node.computed_ethnicities.keys()]
+                
+                inset_ax.pie(values, labels=labels, colors=pie_colors, textprops={'fontsize': 6, 'weight': 'bold'}, radius=1.0)
             else:
                 inset_ax.pie([1], colors=['#e2e8f0'], radius=1.0)
-                inset_ax.text(0, 0, "No Data", ha='center', va='center', fontsize=7, color='#64748b', weight='bold')
+                inset_ax.text(0, 0, "Unknown", ha='center', va='center', fontsize=7, color='#64748b', weight='bold')
                 
             inset_ax.axis('equal')
             
@@ -222,10 +220,10 @@ class AncestryApp:
                 break
 
     def open_parent_dialog(self, person_name):
-        """Interactive Window for updating links and raw heritage traits."""
+        """Interactive Window for updating links, adding custom origins, and editing color properties."""
         dialog = tk.Toplevel(self.root)
         dialog.title(f"Manage Profile: {person_name}")
-        dialog.geometry("480x620")
+        dialog.geometry("520x660")
         dialog.transient(self.root)
         dialog.grab_set()
         
@@ -248,38 +246,61 @@ class AncestryApp:
         # Custom Ethnicity Insertion Area
         custom_frame = tk.Frame(dialog)
         custom_frame.pack(fill=tk.X, padx=30, pady=(0, 10))
-        tk.Label(custom_frame, text="Add New Ethnicity Option:", font=("Arial", 10, "bold")).pack(side=tk.LEFT)
+        tk.Label(custom_frame, text="Add New Ethnicity:", font=("Arial", 10, "bold")).pack(side=tk.LEFT)
         new_eth_entry = tk.Entry(custom_frame, width=15, font=("Arial", 10))
         new_eth_entry.pack(side=tk.LEFT, padx=5)
         
-        # Ethnicity Checklist Selection Frame
+        # Checklist Selection Frame
         tk.Label(dialog, text="Select Origins (Only applies if parents are left blank):", font=("Arial", 10, "bold")).pack(anchor=tk.W, padx=30, pady=(0,3))
         
-        checkbox_frame = tk.LabelFrame(dialog, text=" Available Options ", padx=10, pady=10)
+        checkbox_frame = tk.LabelFrame(dialog, text=" Custom Palette Options (Click color block to edit) ", padx=10, pady=10)
         checkbox_frame.pack(fill=tk.BOTH, expand=True, padx=30, pady=(0,10))
         
         vars_dict = {}
+        
+        def pick_edit_color(ethnicity):
+            current_clr = self.ethnicity_colors.get(ethnicity, "#cbd5e1")
+            color_code = colorchooser.askcolor(initialcolor=current_clr, title=f"Choose Color for {ethnicity}")
+            if color_code[1]:
+                self.ethnicity_colors[ethnicity] = color_code[1]
+                render_checkboxes()
+
         def render_checkboxes():
-            # Clear existing framework inside frame widget
             for widget in checkbox_frame.winfo_children():
                 widget.destroy()
             vars_dict.clear()
+            
             for idx, ethnicity in enumerate(self.ethnicity_options):
                 var = tk.BooleanVar(value=(ethnicity in node.base_ethnicities))
                 vars_dict[ethnicity] = var
+                
+                row_idx = idx // 2
+                col_idx = (idx % 2) * 2
+                
                 cb = tk.Checkbutton(checkbox_frame, text=ethnicity, variable=var, font=("Arial", 9))
-                cb.grid(row=idx // 2, column=idx % 2, sticky=tk.W, padx=10, pady=2)
+                cb.grid(row=row_idx, column=col_idx, sticky=tk.W, padx=(5,2), pady=3)
+                
+                # Color Block Editor Element
+                clr = self.ethnicity_colors.get(ethnicity, "#cbd5e1")
+                lbl_color = tk.Label(checkbox_frame, bg=clr, width=3, relief=tk.RAISED, cursor="hand2")
+                lbl_color.grid(row=row_idx, column=col_idx+1, sticky=tk.W, padx=(0,15))
+                lbl_color.bind("<Button-1>", lambda e, eth=ethnicity: pick_edit_color(eth))
 
         def add_custom_ethnicity():
             new_eth = new_eth_entry.get().strip().title()
             if new_eth and new_eth not in self.ethnicity_options:
+                # Open color picker immediately on declaration
+                color_code = colorchooser.askcolor(title=f"Assign Base Color for {new_eth}")
+                assigned_color = color_code[1] if color_code[1] else "#cbd5e1"
+                
                 self.ethnicity_options.append(new_eth)
+                self.ethnicity_colors[new_eth] = assigned_color
                 new_eth_entry.delete(0, tk.END)
                 render_checkboxes()
             elif new_eth in self.ethnicity_options:
                 messagebox.showwarning("Notice", f"'{new_eth}' is already an option.")
 
-        tk.Button(custom_frame, text="Add", command=add_custom_ethnicity, bg="#cbd5e1", font=("Arial", 9, "bold")).pack(side=tk.LEFT)
+        tk.Button(custom_frame, text="Add & Color", command=add_custom_ethnicity, bg="#cbd5e1", font=("Arial", 9, "bold")).pack(side=tk.LEFT)
         render_checkboxes()
 
         def save_close():
@@ -288,12 +309,10 @@ class AncestryApp:
             
             selected_ethnicities = [eth for eth, var in vars_dict.items() if var.get()]
             
-            # Update current element values
             node.father = father
             node.mother = mother
             node.base_ethnicities = selected_ethnicities
             
-            # Register missing placeholder shells for new parent chains
             if father and father not in self.tree:
                 self.tree[father] = AncestorNode(father)
             if mother and mother not in self.tree:
@@ -310,6 +329,7 @@ class AncestryApp:
             
         serializable_data = {
             "master_ethnicities": self.ethnicity_options,
+            "ethnicity_colors": self.ethnicity_colors,
             "nodes": {}
         }
         for name, node in self.tree.items():
@@ -322,7 +342,7 @@ class AncestryApp:
             
         with open(file_path, 'w') as f:
             json.dump(serializable_data, f, indent=4)
-        messagebox.showinfo("Saved", "Tree configuration safely exported.")
+        messagebox.showinfo("Saved", "Tree state and custom color profiles successfully exported.")
 
     def load_tree(self):
         file_path = filedialog.askopenfilename(filetypes=[("JSON Files", "*.json")])
@@ -333,18 +353,15 @@ class AncestryApp:
             
         self.tree.clear()
         
-        # Load custom master categories if they exist in file architecture
-        if "master_ethnicities" in raw_data:
-            self.ethnicity_options = raw_data["master_ethnicities"]
-            nodes_source = raw_data["nodes"]
-        else:
-            nodes_source = raw_data  # Support structural backward compatibility
+        # Sync palette states from data file configuration layers
+        self.ethnicity_options = raw_data.get("master_ethnicities", [])
+        self.ethnicity_colors = raw_data.get("ethnicity_colors", {})
+        nodes_source = raw_data.get("nodes", {})
             
         for name, data in nodes_source.items():
-            base_eth = data.get("base_ethnicities", list(data.get("ethnicities", {}).keys()))
             self.tree[name] = AncestorNode(
                 name=data["name"],
-                base_ethnicities=base_eth,
+                base_ethnicities=data.get("base_ethnicities", []),
                 father=data.get("father"),
                 mother=data.get("mother")
             )
@@ -355,6 +372,8 @@ class AncestryApp:
     def clear_tree(self):
         if messagebox.askyesno("Confirm", "Are you sure you want to drop the active workspace state?"):
             self.tree.clear()
+            self.ethnicity_options.clear()
+            self.ethnicity_colors.clear()
             self.initialize_default_tree()
 
 if __name__ == "__main__":

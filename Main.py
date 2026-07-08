@@ -31,6 +31,9 @@ class AncestryApp:
         
         self.active_breakdown_window = None
         
+        # New feature state variable to toggle names and plus buttons visibility
+        self.show_decorations = True
+        
         self.setup_ui()
         self.initialize_default_tree()
         
@@ -49,6 +52,10 @@ class AncestryApp:
         tk.Button(control_panel, text="Load Tree JSON", command=self.load_tree, bg="#FF9800", fg="white", font=("Arial", 10, "bold"), height=2).pack(fill=tk.X, pady=6)
         tk.Button(control_panel, text="Clear Tree", command=self.clear_tree, bg="#f44336", fg="white", font=("Arial", 10, "bold"), height=2).pack(fill=tk.X, pady=6)
         
+        # View configuration panel
+        tk.Label(control_panel, text="View Actions", font=("Arial", 14, "bold"), bg="#f8fafc", fg="#1e293b").pack(anchor=tk.W, pady=(20,15))
+        tk.Button(control_panel, text="Toggle Names/Buttons", command=self.toggle_decorations, bg="#475569", fg="white", font=("Arial", 10, "bold"), height=2).pack(fill=tk.X, pady=6)
+        
         self.plot_panel = tk.Frame(self.root, bg="white")
         self.plot_panel.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True)
         
@@ -60,6 +67,11 @@ class AncestryApp:
         self.fig.canvas.mpl_connect('button_release_event', self.on_release)
         self.fig.canvas.mpl_connect('motion_notify_event', self.on_drag)
         self.fig.canvas.mpl_connect('scroll_event', self.on_zoom)
+
+    def toggle_decorations(self):
+        """Switches the visibility flag for structural text tags and re-renders the plot view."""
+        self.show_decorations = not self.show_decorations
+        self.refresh_plot()
 
     def calculate_inheritance(self):
         for node in self.tree.values():
@@ -187,7 +199,7 @@ class AncestryApp:
 
         self.calculate_inheritance()  
         self.ax.clear()
-        self.ax.set_title("Dynamic Anti-Crowding Layout Enabled | Drag to Pan | Scroll to Zoom", fontsize=11, weight='bold', pad=10)
+        # Text Header Title String Cleared/Removed Completely
         self.ax.axis('off')
         
         positions = self.calculate_positions()
@@ -237,16 +249,19 @@ class AncestryApp:
                 
             inset_ax.axis('equal')
             
-            self.ax.text(x, y - (size / 1.5), name, ha='center', va='top', 
-                         fontsize=9, weight='bold',
-                         bbox=dict(boxstyle='round,pad=0.3', facecolor='#ffffff', edgecolor='#cbd5e1', alpha=0.95))
-            
-            plus_y = y + (size / 1.5)
-            self.ax.text(x, plus_y, " + ", ha='center', va='center', 
-                         fontsize=10, weight='bold', color='white',
-                         bbox=dict(boxstyle='circle,pad=0.2', facecolor='#10b981', edgecolor='#047857', alpha=1.0))
-            
-            self.plus_buttons[name] = (x, plus_y)
+            # Conditionally render text tags and plus elements based on current toggle state
+            if self.show_decorations:
+                self.ax.text(x, y - (size / 1.5), name, ha='center', va='top', 
+                             fontsize=9, weight='bold',
+                             bbox=dict(boxstyle='round,pad=0.3', facecolor='#ffffff', edgecolor='#cbd5e1', alpha=0.95))
+                
+                plus_y = y + (size / 1.5)
+                self.ax.text(x, plus_y, " + ", ha='center', va='center', 
+                             fontsize=10, weight='bold', color='white',
+                             bbox=dict(boxstyle='circle,pad=0.2', facecolor='#10b981', edgecolor='#047857', alpha=1.0))
+                
+                self.plus_buttons[name] = (x, plus_y)
+                
             self.pie_centers[name] = (x, y, size / 2.0)
 
         if cur_xlim and cur_ylim:
@@ -265,10 +280,12 @@ class AncestryApp:
             return
             
         click_radius = 0.25
-        for name, (bx, by) in self.plus_buttons.items():
-            if ((event.xdata - bx)**2 + (event.ydata - by)**2)**0.5 <= click_radius:
-                self.open_parent_dialog(name)
-                return
+        # Plus buttons are only interactive if they are currently toggled on/visible
+        if self.show_decorations:
+            for name, (bx, by) in self.plus_buttons.items():
+                if ((event.xdata - bx)**2 + (event.ydata - by)**2)**0.5 <= click_radius:
+                    self.open_parent_dialog(name)
+                    return
 
         for name, (px, py, pradius) in self.pie_centers.items():
             if ((event.xdata - px)**2 + (event.ydata - py)**2)**0.5 <= pradius:
@@ -439,7 +456,6 @@ class AncestryApp:
         render_checkboxes()
 
         def save_close():
-            # Gather old saved name state reference markers
             old_father = node.father
             old_mother = node.mother
             
@@ -449,15 +465,12 @@ class AncestryApp:
             
             node.base_ethnicities = selected_ethnicities
 
-            # --- Father Node Update/Renaming Logic ---
             if old_father and new_father and old_father != new_father:
-                # If modifying an existing profile's name string, transition the map key safely
                 if old_father in self.tree:
                     parent_node = self.tree.pop(old_father)
                     parent_node.name = new_father
                     self.tree[new_father] = parent_node
                     
-                    # Cascade updates downstream to any nodes linked to this father
                     for n in self.tree.values():
                         if n.father == old_father: n.father = new_father
                         if n.mother == old_father: n.mother = new_father
@@ -466,7 +479,6 @@ class AncestryApp:
             elif new_father and new_father not in self.tree:
                 self.tree[new_father] = AncestorNode(new_father)
             
-            # --- Mother Node Update/Renaming Logic ---
             if old_mother and new_mother and old_mother != new_mother:
                 if old_mother in self.tree:
                     parent_node = self.tree.pop(old_mother)

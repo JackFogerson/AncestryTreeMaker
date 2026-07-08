@@ -112,7 +112,6 @@ class AncestryApp:
                 self._compute_node_heritage(child_name, visited.copy())
 
     def _count_leaves(self, name, memo):
-        """Helper to compute how much horizontal density a sub-tree actually requires."""
         if name not in self.tree:
             return 1
         if name in memo:
@@ -122,11 +121,9 @@ class AncestryApp:
         if not node.father and not node.mother:
             return 1
             
-        # Total layout width requirement is the sum of its parental branches
         f_leaves = self._count_leaves(node.father, memo) if node.father else 0
         m_leaves = self._count_leaves(node.mother, memo) if node.mother else 0
         
-        # If a single parent line exists, it takes up the same footprint as the child
         memo[name] = max(1, f_leaves + m_leaves)
         return memo[name]
 
@@ -145,7 +142,6 @@ class AncestryApp:
             roots = [list(self.tree.keys())[0]]
             
         leaf_memo = {}
-        # Min distance padding allocated per base leaf node unit
         scale_factor = 2.5 
 
         def assign_coords(node_name, x_center, y, allocated_width):
@@ -160,11 +156,9 @@ class AncestryApp:
                 m_w = self._count_leaves(node.mother, leaf_memo)
                 total_w = f_w + m_w
                 
-                # Proportional sub-space chunk allocation based on ancestral density
                 f_share = (f_w / total_w) * allocated_width
                 m_share = (m_w / total_w) * allocated_width
                 
-                # Calculate exact centers for left and right brackets
                 f_x = x_center - (allocated_width / 2.0) + (f_share / 2.0)
                 m_x = x_center + (allocated_width / 2.0) - (m_share / 2.0)
                 
@@ -172,7 +166,6 @@ class AncestryApp:
                 assign_coords(node.mother, m_x, y + 2.0, m_share)
                 
             elif node.father:
-                # Lock straight up vertically over child if single parent
                 assign_coords(node.father, x_center, y + 2.0, allocated_width)
             elif node.mother:
                 assign_coords(node.mother, x_center, y + 2.0, allocated_width)
@@ -184,7 +177,7 @@ class AncestryApp:
             root_center = current_x_offset + (root_width / 2.0)
             
             assign_coords(root, root_center, y=0.0, allocated_width=root_width)
-            current_x_offset += root_width + 3.0 # Dynamic root buffer padding
+            current_x_offset += root_width + 3.0 
             
         return positions
 
@@ -446,18 +439,50 @@ class AncestryApp:
         render_checkboxes()
 
         def save_close():
-            father = f_entry.get().strip() or None
-            mother = m_entry.get().strip() or None
+            # Gather old saved name state reference markers
+            old_father = node.father
+            old_mother = node.mother
+            
+            new_father = f_entry.get().strip() or None
+            new_mother = m_entry.get().strip() or None
             selected_ethnicities = [eth for eth, var in vars_dict.items() if var.get()]
             
-            node.father = father
-            node.mother = mother
             node.base_ethnicities = selected_ethnicities
+
+            # --- Father Node Update/Renaming Logic ---
+            if old_father and new_father and old_father != new_father:
+                # If modifying an existing profile's name string, transition the map key safely
+                if old_father in self.tree:
+                    parent_node = self.tree.pop(old_father)
+                    parent_node.name = new_father
+                    self.tree[new_father] = parent_node
+                    
+                    # Cascade updates downstream to any nodes linked to this father
+                    for n in self.tree.values():
+                        if n.father == old_father: n.father = new_father
+                        if n.mother == old_father: n.mother = new_father
+                else:
+                    self.tree[new_father] = AncestorNode(new_father)
+            elif new_father and new_father not in self.tree:
+                self.tree[new_father] = AncestorNode(new_father)
             
-            if father and father not in self.tree:
-                self.tree[father] = AncestorNode(father)
-            if mother and mother not in self.tree:
-                self.tree[mother] = AncestorNode(mother)
+            # --- Mother Node Update/Renaming Logic ---
+            if old_mother and new_mother and old_mother != new_mother:
+                if old_mother in self.tree:
+                    parent_node = self.tree.pop(old_mother)
+                    parent_node.name = new_mother
+                    self.tree[new_mother] = parent_node
+                    
+                    for n in self.tree.values():
+                        if n.father == old_mother: n.father = new_mother
+                        if n.mother == old_mother: n.mother = new_mother
+                else:
+                    self.tree[new_mother] = AncestorNode(new_mother)
+            elif new_mother and new_mother not in self.tree:
+                self.tree[new_mother] = AncestorNode(new_mother)
+                
+            node.father = new_father
+            node.mother = new_mother
                 
             dialog.destroy()
             self.refresh_plot()

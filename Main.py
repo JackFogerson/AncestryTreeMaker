@@ -29,7 +29,6 @@ class AncestryApp:
         self.press_x = None
         self.press_y = None
         
-        # Track the single breakdown window instance
         self.active_breakdown_window = None
         
         self.setup_ui()
@@ -112,6 +111,25 @@ class AncestryApp:
             if child_node.father == name or child_node.mother == name:
                 self._compute_node_heritage(child_name, visited.copy())
 
+    def _count_leaves(self, name, memo):
+        """Helper to compute how much horizontal density a sub-tree actually requires."""
+        if name not in self.tree:
+            return 1
+        if name in memo:
+            return memo[name]
+            
+        node = self.tree[name]
+        if not node.father and not node.mother:
+            return 1
+            
+        # Total layout width requirement is the sum of its parental branches
+        f_leaves = self._count_leaves(node.father, memo) if node.father else 0
+        m_leaves = self._count_leaves(node.mother, memo) if node.mother else 0
+        
+        # If a single parent line exists, it takes up the same footprint as the child
+        memo[name] = max(1, f_leaves + m_leaves)
+        return memo[name]
+
     def calculate_positions(self):
         positions = {}
         if not self.tree:
@@ -126,25 +144,47 @@ class AncestryApp:
         if not roots:  
             roots = [list(self.tree.keys())[0]]
             
-        def assign_coords(node_name, x, y, horizontal_spacing):
+        leaf_memo = {}
+        # Min distance padding allocated per base leaf node unit
+        scale_factor = 2.5 
+
+        def assign_coords(node_name, x_center, y, allocated_width):
             if node_name not in self.tree or node_name in positions:
                 return
-            positions[node_name] = (x, y)
+            positions[node_name] = (x_center, y)
             
             node = self.tree[node_name]
             
-            # If both parents exist, space them out evenly to the left and right
             if node.father and node.mother:
-                assign_coords(node.father, x - horizontal_spacing, y + 2.0, horizontal_spacing / 1.7)
-                assign_coords(node.mother, x + horizontal_spacing, y + 2.0, horizontal_spacing / 1.7)
-            # Fix: If only a single parent exists, lock their x coordinate directly to the child's position (Straight up line)
+                f_w = self._count_leaves(node.father, leaf_memo)
+                m_w = self._count_leaves(node.mother, leaf_memo)
+                total_w = f_w + m_w
+                
+                # Proportional sub-space chunk allocation based on ancestral density
+                f_share = (f_w / total_w) * allocated_width
+                m_share = (m_w / total_w) * allocated_width
+                
+                # Calculate exact centers for left and right brackets
+                f_x = x_center - (allocated_width / 2.0) + (f_share / 2.0)
+                m_x = x_center + (allocated_width / 2.0) - (m_share / 2.0)
+                
+                assign_coords(node.father, f_x, y + 2.0, f_share)
+                assign_coords(node.mother, m_x, y + 2.0, m_share)
+                
             elif node.father:
-                assign_coords(node.father, x, y + 2.0, horizontal_spacing / 1.7)
+                # Lock straight up vertically over child if single parent
+                assign_coords(node.father, x_center, y + 2.0, allocated_width)
             elif node.mother:
-                assign_coords(node.mother, x, y + 2.0, horizontal_spacing / 1.7)
+                assign_coords(node.mother, x_center, y + 2.0, allocated_width)
 
-        for i, root in enumerate(roots):
-            assign_coords(root, x=i * 8.0, y=0, horizontal_spacing=3.0)
+        current_x_offset = 0.0
+        for root in roots:
+            leaves = self._count_leaves(root, leaf_memo)
+            root_width = leaves * scale_factor
+            root_center = current_x_offset + (root_width / 2.0)
+            
+            assign_coords(root, root_center, y=0.0, allocated_width=root_width)
+            current_x_offset += root_width + 3.0 # Dynamic root buffer padding
             
         return positions
 
@@ -154,7 +194,7 @@ class AncestryApp:
 
         self.calculate_inheritance()  
         self.ax.clear()
-        self.ax.set_title("Click a Pie Chart to view its Detailed Percentage Breakdown", fontsize=11, weight='bold', pad=10)
+        self.ax.set_title("Dynamic Anti-Crowding Layout Enabled | Drag to Pan | Scroll to Zoom", fontsize=11, weight='bold', pad=10)
         self.ax.axis('off')
         
         positions = self.calculate_positions()
@@ -165,14 +205,12 @@ class AncestryApp:
             self.canvas.draw()
             return
 
-        # Traditional Orthogonal/Square Bracket Line Tracing Engine
         for name, node in self.tree.items():
             if name in positions:
                 x, y = positions[name]
                 has_father = node.father in positions
                 has_mother = node.mother in positions
                 
-                # Case 1: Both parents present -> Horizontal bridge bar + dropdown stem
                 if has_father and has_mother:
                     fx, fy = positions[node.father]
                     mx, my = positions[node.mother]
@@ -183,7 +221,6 @@ class AncestryApp:
                     self.ax.plot([fx, fx], [fy, mid_y], color='#10b981', linestyle='-', linewidth=2.5, zorder=1, clip_on=False)
                     self.ax.plot([mx, mx], [my, mid_y], color='#10b981', linestyle='-', linewidth=2.5, zorder=1, clip_on=False)
                     
-                # Case 2: Only one parent exists -> Clean straight vertical path layout
                 elif has_father:
                     fx, fy = positions[node.father]
                     self.ax.plot([x, fx], [y, fy], color='#94a3b8', linestyle='-', linewidth=2, zorder=1, clip_on=False)
@@ -201,7 +238,6 @@ class AncestryApp:
             if node.computed_ethnicities:
                 values = list(node.computed_ethnicities.values())
                 pie_colors = [self.ethnicity_colors.get(k, '#e2e8f0') for k in node.computed_ethnicities.keys()]
-                # Labels completely removed here to speed up performance and declutter UI
                 inset_ax.pie(values, labels=None, colors=pie_colors, radius=1.0)
             else:
                 inset_ax.pie([1], colors=['#e2e8f0'], radius=1.0)
@@ -286,12 +322,11 @@ class AncestryApp:
         self.canvas.draw()
 
     def display_ethnic_breakdown(self, person_name):
-        # Auto-destroy old breakdown windows if they exist
         if self.active_breakdown_window is not None:
             try:
                 self.active_breakdown_window.destroy()
             except tk.TclError:
-                pass # Already closed by user
+                pass 
                 
         node = self.tree[person_name]
         self.active_breakdown_window = tk.Toplevel(self.root)
@@ -448,7 +483,7 @@ class AncestryApp:
             
         with open(file_path, 'w') as f:
             json.dump(serializable_data, f, indent=4)
-        messagebox.showinfo("Saved", "Tree state and custom color profiles successfully exported.")
+        messagebox.showinfo("Saved", "Tree state successfully exported.")
 
     def load_tree(self):
         file_path = filedialog.askopenfilename(filetypes=[("JSON Files", "*.json")])

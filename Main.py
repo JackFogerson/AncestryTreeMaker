@@ -29,6 +29,9 @@ class AncestryApp:
         self.press_x = None
         self.press_y = None
         
+        # Track the single breakdown window instance
+        self.active_breakdown_window = None
+        
         self.setup_ui()
         self.initialize_default_tree()
         
@@ -129,11 +132,16 @@ class AncestryApp:
             positions[node_name] = (x, y)
             
             node = self.tree[node_name]
-            # Space out parents cleanly centered above the child node point
-            if node.father:
+            
+            # If both parents exist, space them out evenly to the left and right
+            if node.father and node.mother:
                 assign_coords(node.father, x - horizontal_spacing, y + 2.0, horizontal_spacing / 1.7)
-            if node.mother:
                 assign_coords(node.mother, x + horizontal_spacing, y + 2.0, horizontal_spacing / 1.7)
+            # Fix: If only a single parent exists, lock their x coordinate directly to the child's position (Straight up line)
+            elif node.father:
+                assign_coords(node.father, x, y + 2.0, horizontal_spacing / 1.7)
+            elif node.mother:
+                assign_coords(node.mother, x, y + 2.0, horizontal_spacing / 1.7)
 
         for i, root in enumerate(roots):
             assign_coords(root, x=i * 8.0, y=0, horizontal_spacing=3.0)
@@ -146,7 +154,7 @@ class AncestryApp:
 
         self.calculate_inheritance()  
         self.ax.clear()
-        self.ax.set_title("Traditional Orthogonal Bracket Layout | Drag Background to Pan | Scroll to Zoom", fontsize=11, weight='bold', pad=10)
+        self.ax.set_title("Click a Pie Chart to view its Detailed Percentage Breakdown", fontsize=11, weight='bold', pad=10)
         self.ax.axis('off')
         
         positions = self.calculate_positions()
@@ -157,29 +165,25 @@ class AncestryApp:
             self.canvas.draw()
             return
 
-        # Upgraded Orthogonal/Square Bracket Line Tracing Engine matching image_003f7b.jpg
+        # Traditional Orthogonal/Square Bracket Line Tracing Engine
         for name, node in self.tree.items():
             if name in positions:
                 x, y = positions[name]
                 has_father = node.father in positions
                 has_mother = node.mother in positions
                 
-                # Case 1: Both parents present (Construct classic horizontal bridging bar with center dropdown stem)
+                # Case 1: Both parents present -> Horizontal bridge bar + dropdown stem
                 if has_father and has_mother:
                     fx, fy = positions[node.father]
                     mx, my = positions[node.mother]
+                    mid_y = y + 1.0  
                     
-                    mid_y = y + 1.0  # Sideways horizontal split height
-                    
-                    # Vertical stem straight out of child up to the horizontal bracket line
                     self.ax.plot([x, x], [y, mid_y], color='#10b981', linestyle='-', linewidth=2.5, zorder=1, clip_on=False)
-                    # Horizontal bridging line tracking parent span bounds
                     self.ax.plot([fx, mx], [mid_y, mid_y], color='#10b981', linestyle='-', linewidth=2.5, zorder=1, clip_on=False)
-                    # Verticals dropping directly down out of father and mother nodes to meet the bridge line
                     self.ax.plot([fx, fx], [fy, mid_y], color='#10b981', linestyle='-', linewidth=2.5, zorder=1, clip_on=False)
                     self.ax.plot([mx, mx], [my, mid_y], color='#10b981', linestyle='-', linewidth=2.5, zorder=1, clip_on=False)
                     
-                # Case 2: Only one parent exists (Clean orthogonal linear straight path layout)
+                # Case 2: Only one parent exists -> Clean straight vertical path layout
                 elif has_father:
                     fx, fy = positions[node.father]
                     self.ax.plot([x, fx], [y, fy], color='#94a3b8', linestyle='-', linewidth=2, zorder=1, clip_on=False)
@@ -195,13 +199,12 @@ class AncestryApp:
             inset_ax.zorder = 2
             
             if node.computed_ethnicities:
-                labels = [f"{k}\n{v:.2f}%" for k, v in node.computed_ethnicities.items()]
                 values = list(node.computed_ethnicities.values())
                 pie_colors = [self.ethnicity_colors.get(k, '#e2e8f0') for k in node.computed_ethnicities.keys()]
-                inset_ax.pie(values, labels=labels, colors=pie_colors, textprops={'fontsize': 6, 'weight': 'bold'}, radius=1.0)
+                # Labels completely removed here to speed up performance and declutter UI
+                inset_ax.pie(values, labels=None, colors=pie_colors, radius=1.0)
             else:
                 inset_ax.pie([1], colors=['#e2e8f0'], radius=1.0)
-                inset_ax.text(0, 0, "Unknown\n100.00%", ha='center', va='center', fontsize=7, color='#64748b', weight='bold')
                 
             inset_ax.axis('equal')
             
@@ -283,8 +286,17 @@ class AncestryApp:
         self.canvas.draw()
 
     def display_ethnic_breakdown(self, person_name):
+        # Auto-destroy old breakdown windows if they exist
+        if self.active_breakdown_window is not None:
+            try:
+                self.active_breakdown_window.destroy()
+            except tk.TclError:
+                pass # Already closed by user
+                
         node = self.tree[person_name]
-        breakdown_window = tk.Toplevel(self.root)
+        self.active_breakdown_window = tk.Toplevel(self.root)
+        breakdown_window = self.active_breakdown_window
+        
         breakdown_window.title(f"Composition Breakdown: {person_name}")
         breakdown_window.geometry("380x450")
         breakdown_window.configure(bg="#f8fafc")
@@ -463,6 +475,8 @@ class AncestryApp:
         
     def clear_tree(self):
         if messagebox.askyesno("Confirm", "Are you sure you want to drop the active workspace state?"):
+            if self.active_breakdown_window:
+                self.active_breakdown_window.destroy()
             self.tree.clear()
             self.ethnicity_options.clear()
             self.ethnicity_colors.clear()

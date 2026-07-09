@@ -29,9 +29,11 @@ class AncestryApp:
         self.press_x = None
         self.press_y = None
         
-        self.active_breakdown_window = None
+        # Performance optimization: track last drawn coordinates to avoid rendering overload
+        self.last_draw_x = 0
+        self.last_draw_y = 0
         
-        # New feature state variable to toggle names and plus buttons visibility
+        self.active_breakdown_window = None
         self.show_decorations = True
         
         self.setup_ui()
@@ -52,7 +54,6 @@ class AncestryApp:
         tk.Button(control_panel, text="Load Tree JSON", command=self.load_tree, bg="#FF9800", fg="white", font=("Arial", 10, "bold"), height=2).pack(fill=tk.X, pady=6)
         tk.Button(control_panel, text="Clear Tree", command=self.clear_tree, bg="#f44336", fg="white", font=("Arial", 10, "bold"), height=2).pack(fill=tk.X, pady=6)
         
-        # View configuration panel
         tk.Label(control_panel, text="View Actions", font=("Arial", 14, "bold"), bg="#f8fafc", fg="#1e293b").pack(anchor=tk.W, pady=(20,15))
         tk.Button(control_panel, text="Toggle Names/Buttons", command=self.toggle_decorations, bg="#475569", fg="white", font=("Arial", 10, "bold"), height=2).pack(fill=tk.X, pady=6)
         
@@ -69,7 +70,6 @@ class AncestryApp:
         self.fig.canvas.mpl_connect('scroll_event', self.on_zoom)
 
     def toggle_decorations(self):
-        """Switches the visibility flag for structural text tags and re-renders the plot view."""
         self.show_decorations = not self.show_decorations
         self.refresh_plot()
 
@@ -199,7 +199,6 @@ class AncestryApp:
 
         self.calculate_inheritance()  
         self.ax.clear()
-        # Text Header Title String Cleared/Removed Completely
         self.ax.axis('off')
         
         positions = self.calculate_positions()
@@ -249,16 +248,16 @@ class AncestryApp:
                 
             inset_ax.axis('equal')
             
-            # Conditionally render text tags and plus elements based on current toggle state
             if self.show_decorations:
+                # OPTIMIZATION: Swapped 'round' bboxes for clean 'square' shapes to drop complex geometry calculations
                 self.ax.text(x, y - (size / 1.5), name, ha='center', va='top', 
                              fontsize=9, weight='bold',
-                             bbox=dict(boxstyle='round,pad=0.3', facecolor='#ffffff', edgecolor='#cbd5e1', alpha=0.95))
+                             bbox=dict(boxstyle='square,pad=0.2', facecolor='#ffffff', edgecolor='#cbd5e1', alpha=0.95))
                 
                 plus_y = y + (size / 1.5)
                 self.ax.text(x, plus_y, " + ", ha='center', va='center', 
                              fontsize=10, weight='bold', color='white',
-                             bbox=dict(boxstyle='circle,pad=0.2', facecolor='#10b981', edgecolor='#047857', alpha=1.0))
+                             bbox=dict(boxstyle='square,pad=0.15', facecolor='#10b981', edgecolor='#047857', alpha=1.0))
                 
                 self.plus_buttons[name] = (x, plus_y)
                 
@@ -279,8 +278,7 @@ class AncestryApp:
         if event.xdata is None or event.ydata is None:
             return
             
-        click_radius = 0.25
-        # Plus buttons are only interactive if they are currently toggled on/visible
+        click_radius = 0.35 # Slightly wider interactive threshold for easier targeting
         if self.show_decorations:
             for name, (bx, by) in self.plus_buttons.items():
                 if ((event.xdata - bx)**2 + (event.ydata - by)**2)**0.5 <= click_radius:
@@ -296,10 +294,17 @@ class AncestryApp:
             self.is_dragging = True
             self.press_x = event.xdata
             self.press_y = event.ydata
+            self.last_draw_x = event.x
+            self.last_draw_y = event.y
 
     def on_drag(self, event):
         if not self.is_dragging or event.xdata is None or event.ydata is None:
             return
+            
+        # OPTIMIZATION: Frame-skipping mechanism. Skip redraws if movement is microscopic (under 4 pixels).
+        if abs(event.x - self.last_draw_x) < 4 and abs(event.y - self.last_draw_y) < 4:
+            return
+            
         dx = self.press_x - event.xdata
         dy = self.press_y - event.ydata
         
@@ -308,6 +313,9 @@ class AncestryApp:
         
         self.ax.set_xlim(xlim[0] + dx, xlim[1] + dx)
         self.ax.set_ylim(ylim[0] + dy, ylim[1] + dy)
+        
+        self.last_draw_x = event.x
+        self.last_draw_y = event.y
         self.canvas.draw()
 
     def on_release(self, event):

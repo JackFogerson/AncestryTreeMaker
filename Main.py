@@ -29,7 +29,6 @@ class AncestryApp:
         self.press_x = None
         self.press_y = None
         
-        # Performance optimization: track last drawn coordinates to avoid rendering overload
         self.last_draw_x = 0
         self.last_draw_y = 0
         
@@ -154,7 +153,9 @@ class AncestryApp:
             roots = [list(self.tree.keys())[0]]
             
         leaf_memo = {}
-        scale_factor = 2.5 
+        
+        # OPTIMIZATION: Expanded scale footprint allocation from 2.5 -> 5.0 to give charts breathing room
+        scale_factor = 5.0 
 
         def assign_coords(node_name, x_center, y, allocated_width):
             if node_name not in self.tree or node_name in positions:
@@ -163,6 +164,7 @@ class AncestryApp:
             
             node = self.tree[node_name]
             
+            # Increased generation vertical branch gap from 2.0 to 3.0 to isolate text layouts
             if node.father and node.mother:
                 f_w = self._count_leaves(node.father, leaf_memo)
                 m_w = self._count_leaves(node.mother, leaf_memo)
@@ -174,13 +176,13 @@ class AncestryApp:
                 f_x = x_center - (allocated_width / 2.0) + (f_share / 2.0)
                 m_x = x_center + (allocated_width / 2.0) - (m_share / 2.0)
                 
-                assign_coords(node.father, f_x, y + 2.0, f_share)
-                assign_coords(node.mother, m_x, y + 2.0, m_share)
+                assign_coords(node.father, f_x, y + 3.0, f_share)
+                assign_coords(node.mother, m_x, y + 3.0, m_share)
                 
             elif node.father:
-                assign_coords(node.father, x_center, y + 2.0, allocated_width)
+                assign_coords(node.father, x_center, y + 3.0, allocated_width)
             elif node.mother:
-                assign_coords(node.mother, x_center, y + 2.0, allocated_width)
+                assign_coords(node.mother, x_center, y + 3.0, allocated_width)
 
         current_x_offset = 0.0
         for root in roots:
@@ -189,7 +191,7 @@ class AncestryApp:
             root_center = current_x_offset + (root_width / 2.0)
             
             assign_coords(root, root_center, y=0.0, allocated_width=root_width)
-            current_x_offset += root_width + 3.0 
+            current_x_offset += root_width + 5.0 
             
         return positions
 
@@ -215,10 +217,11 @@ class AncestryApp:
                 has_father = node.father in positions
                 has_mother = node.mother in positions
                 
+                # Adjusted bracket geometry coordinates to align precisely with new 3.0 y spacing heights
                 if has_father and has_mother:
                     fx, fy = positions[node.father]
                     mx, my = positions[node.mother]
-                    mid_y = y + 1.0  
+                    mid_y = y + 1.5  
                     
                     self.ax.plot([x, x], [y, mid_y], color='#10b981', linestyle='-', linewidth=2.5, zorder=1, clip_on=False)
                     self.ax.plot([fx, mx], [mid_y, mid_y], color='#10b981', linestyle='-', linewidth=2.5, zorder=1, clip_on=False)
@@ -234,7 +237,9 @@ class AncestryApp:
 
         for name, (x, y) in positions.items():
             node = self.tree[name]
-            size = 0.55  
+            
+            # OPTIMIZATION: Scaled the structural size area up from 0.55 -> 0.95 to maximize pie chart visibility
+            size = 0.95  
             
             inset_ax = self.ax.inset_axes([x - size/2, y - size/2, size, size], transform=self.ax.transData)
             inset_ax.zorder = 2
@@ -249,15 +254,18 @@ class AncestryApp:
             inset_ax.axis('equal')
             
             if self.show_decorations:
-                # OPTIMIZATION: Swapped 'round' bboxes for clean 'square' shapes to drop complex geometry calculations
-                self.ax.text(x, y - (size / 1.5), name, ha='center', va='top', 
+                # REFACTOR: Extracted only the final text block segment to drop name overlaps cleanly
+                last_name_only = name.strip().split()[-1] if name.strip() else ""
+                
+                self.ax.text(x, y - (size / 1.4), last_name_only, ha='center', va='top', 
                              fontsize=9, weight='bold',
                              bbox=dict(boxstyle='square,pad=0.2', facecolor='#ffffff', edgecolor='#cbd5e1', alpha=0.95))
                 
-                plus_y = y + (size / 1.5)
-                self.ax.text(x, plus_y, " + ", ha='center', va='center', 
-                             fontsize=10, weight='bold', color='white',
-                             bbox=dict(boxstyle='square,pad=0.15', facecolor='#10b981', edgecolor='#047857', alpha=1.0))
+                # REFACTOR: Reduced sizing pads to cleanly contain the '+' sign without bleeding into line paths
+                plus_y = y + (size / 1.4)
+                self.ax.text(x, plus_y, "+", ha='center', va='center', 
+                             fontsize=8, weight='bold', color='white',
+                             bbox=dict(boxstyle='square,pad=0.1', facecolor='#10b981', edgecolor='#047857', alpha=1.0))
                 
                 self.plus_buttons[name] = (x, plus_y)
                 
@@ -269,8 +277,8 @@ class AncestryApp:
         else:
             all_x = [pt[0] for pt in positions.values()]
             all_y = [pt[1] for pt in positions.values()]
-            self.ax.set_xlim(min(all_x) - 3.0, max(all_x) + 3.0)
-            self.ax.set_ylim(min(all_y) - 1.5, max(all_y) + 2.5)
+            self.ax.set_xlim(min(all_x) - 4.0, max(all_x) + 4.0)
+            self.ax.set_ylim(min(all_y) - 2.0, max(all_y) + 3.0)
         
         self.canvas.draw()
 
@@ -278,7 +286,7 @@ class AncestryApp:
         if event.xdata is None or event.ydata is None:
             return
             
-        click_radius = 0.35 # Slightly wider interactive threshold for easier targeting
+        click_radius = 0.4 
         if self.show_decorations:
             for name, (bx, by) in self.plus_buttons.items():
                 if ((event.xdata - bx)**2 + (event.ydata - by)**2)**0.5 <= click_radius:
@@ -301,7 +309,6 @@ class AncestryApp:
         if not self.is_dragging or event.xdata is None or event.ydata is None:
             return
             
-        # OPTIMIZATION: Frame-skipping mechanism. Skip redraws if movement is microscopic (under 4 pixels).
         if abs(event.x - self.last_draw_x) < 4 and abs(event.y - self.last_draw_y) < 4:
             return
             

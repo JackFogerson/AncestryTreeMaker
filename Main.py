@@ -1,8 +1,7 @@
 import tkinter as tk
 from tkinter import messagebox, filedialog, colorchooser
 import json
-import matplotlib.pyplot as plt
-from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+import math
 
 class AncestorNode:
     def __init__(self, name, base_ethnicities=None, father=None, mother=None):
@@ -15,22 +14,18 @@ class AncestorNode:
 class AncestryApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("Interactive Ancestry Pie-Chart Tree")
+        self.root.title("Ultra-Fast Ancestry Canvas Tree")
         self.root.geometry("1200x800")
         
         self.ethnicity_options = []
         self.ethnicity_colors = {} 
         
         self.tree = {}  
-        self.plus_buttons = {}  
-        self.pie_centers = {} 
+        self.positions = {}
         
-        self.is_dragging = False
-        self.press_x = None
-        self.press_y = None
-        
-        self.last_draw_x = 0
-        self.last_draw_y = 0
+        self.canvas_scale = 1.0
+        self.drag_start_x = 0
+        self.drag_start_y = 0
         
         self.active_breakdown_window = None
         self.show_decorations = True
@@ -56,17 +51,14 @@ class AncestryApp:
         tk.Label(control_panel, text="View Actions", font=("Arial", 14, "bold"), bg="#f8fafc", fg="#1e293b").pack(anchor=tk.W, pady=(20,15))
         tk.Button(control_panel, text="Toggle Names/Buttons", command=self.toggle_decorations, bg="#475569", fg="white", font=("Arial", 10, "bold"), height=2).pack(fill=tk.X, pady=6)
         
-        self.plot_panel = tk.Frame(self.root, bg="white")
-        self.plot_panel.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True)
+        self.canvas = tk.Canvas(self.root, bg="white", highlightthickness=0)
+        self.canvas.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True)
         
-        self.fig, self.ax = plt.subplots(figsize=(8, 8))
-        self.canvas = FigureCanvasTkAgg(self.fig, master=self.plot_panel)
-        self.canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
-        
-        self.fig.canvas.mpl_connect('button_press_event', self.on_press)
-        self.fig.canvas.mpl_connect('button_release_event', self.on_release)
-        self.fig.canvas.mpl_connect('motion_notify_event', self.on_drag)
-        self.fig.canvas.mpl_connect('scroll_event', self.on_zoom)
+        self.canvas.bind("<ButtonPress-1>", self.on_press)
+        self.canvas.bind("<B1-Motion>", self.on_drag)
+        self.canvas.bind("<MouseWheel>", self.on_zoom)  
+        self.canvas.bind("<Button-4>", self.on_zoom)    
+        self.canvas.bind("<Button-5>", self.on_zoom)    
 
     def toggle_decorations(self):
         self.show_decorations = not self.show_decorations
@@ -138,6 +130,15 @@ class AncestryApp:
         memo[name] = max(1, f_leaves + m_leaves)
         return memo[name]
 
+    def _get_max_depth(self, name, visited):
+        if name in visited or name not in self.tree:
+            return 0
+        visited.add(name)
+        node = self.tree[name]
+        f_depth = self._get_max_depth(node.father, visited) if node.father else 0
+        m_depth = self._get_max_depth(node.mother, visited) if node.mother else 0
+        return 1 + max(f_depth, m_depth)
+
     def calculate_positions(self):
         positions = {}
         if not self.tree:
@@ -153,9 +154,8 @@ class AncestryApp:
             roots = [list(self.tree.keys())[0]]
             
         leaf_memo = {}
-        
-        # OPTIMIZATION: Expanded scale footprint allocation from 2.5 -> 5.0 to give charts breathing room
-        scale_factor = 5.0 
+        scale_factor = 140.0 
+        vertical_generation_gap = 500.0
 
         def assign_coords(node_name, x_center, y, allocated_width):
             if node_name not in self.tree or node_name in positions:
@@ -163,8 +163,6 @@ class AncestryApp:
             positions[node_name] = (x_center, y)
             
             node = self.tree[node_name]
-            
-            # Increased generation vertical branch gap from 2.0 to 3.0 to isolate text layouts
             if node.father and node.mother:
                 f_w = self._count_leaves(node.father, leaf_memo)
                 m_w = self._count_leaves(node.mother, leaf_memo)
@@ -176,175 +174,169 @@ class AncestryApp:
                 f_x = x_center - (allocated_width / 2.0) + (f_share / 2.0)
                 m_x = x_center + (allocated_width / 2.0) - (m_share / 2.0)
                 
-                assign_coords(node.father, f_x, y + 3.0, f_share)
-                assign_coords(node.mother, m_x, y + 3.0, m_share)
-                
+                assign_coords(node.father, f_x, y - vertical_generation_gap, f_share)
+                assign_coords(node.mother, m_x, y - vertical_generation_gap, m_share)
             elif node.father:
-                assign_coords(node.father, x_center, y + 3.0, allocated_width)
+                assign_coords(node.father, x_center, y - vertical_generation_gap, allocated_width)
             elif node.mother:
-                assign_coords(node.mother, x_center, y + 3.0, allocated_width)
+                assign_coords(node.mother, x_center, y - vertical_generation_gap, allocated_width)
 
-        current_x_offset = 0.0
+        max_depth = 1
+        for root in roots:
+            max_depth = max(max_depth, self._get_max_depth(root, set()))
+        
+        current_x_offset = 200.0
+        base_y = max(600.0, max_depth * vertical_generation_gap + 100.0)
+        
         for root in roots:
             leaves = self._count_leaves(root, leaf_memo)
             root_width = leaves * scale_factor
             root_center = current_x_offset + (root_width / 2.0)
             
-            assign_coords(root, root_center, y=0.0, allocated_width=root_width)
-            current_x_offset += root_width + 5.0 
+            assign_coords(root, root_center, base_y, allocated_width=root_width)
+            current_x_offset += root_width + 150.0 
             
         return positions
 
-    def refresh_plot(self):
-        cur_xlim = self.ax.get_xlim() if self.press_x is not None else None
-        cur_ylim = self.ax.get_ylim() if self.press_x is not None else None
+    def draw_pie_chart(self, x, y, radius, ethnicities):
+        """Renders pie charts using robust polygon structures completely immune to arc-engine panics."""
+        active_eth = {k: v for k, v in ethnicities.items() if v > 0}
+        
+        if not active_eth:
+            self.canvas.create_oval(x - radius, y - radius, x + radius, y + radius, fill="#e2e8f0", outline="#cbd5e1", width=1)
+            return
 
+        sorted_eth = sorted(active_eth.items(), key=lambda item: item[1], reverse=True)
+        largest_eth, largest_val = sorted_eth[0]
+        base_color = '#e2e8f0' if largest_eth == "Unknown" else self.ethnicity_colors.get(largest_eth, '#e2e8f0')
+
+        # Draw structural base background ring (handles largest eth automatically)
+        self.canvas.create_oval(x - radius, y - radius, x + radius, y + radius, fill=base_color, outline="#cbd5e1", width=1)
+        
+        if len(active_eth) == 1:
+            return
+            
+        total = sum(active_eth.values())
+        current_angle = 0.0
+        
+        for eth, value in active_eth.items():
+            extent = (value / total) * 360.0
+            if eth != largest_eth:
+                color = '#e2e8f0' if eth == "Unknown" else self.ethnicity_colors.get(eth, '#e2e8f0')
+                
+                # REVOLUTIONARY FIX: Render the slice using coordinate arrays instead of create_arc.
+                # When scaled down, these points safely move together linearly without rounding math blowing up.
+                points = [x, y]
+                steps = max(4, int(extent / 3)) # Smooth curve segmentation proportional to slice width
+                for i in range(steps + 1):
+                    ang = current_angle + (extent * i / steps)
+                    rad = math.radians(ang)
+                    px = x + radius * math.cos(rad)
+                    py = y - radius * math.sin(rad) # standard Tkinter inverted Y translation
+                    points.append(px)
+                    points.append(py)
+                    
+                self.canvas.create_polygon(points, fill=color, outline="#ffffff", width=0.5)
+            current_angle += extent
+
+    def refresh_plot(self):
+        self.canvas.delete("all")
         self.calculate_inheritance()  
-        self.ax.clear()
-        self.ax.axis('off')
+        self.positions = self.calculate_positions()
         
-        positions = self.calculate_positions()
-        self.plus_buttons.clear()
-        self.pie_centers.clear()
-        
-        if not positions:
-            self.canvas.draw()
+        if not self.positions:
             return
 
         for name, node in self.tree.items():
-            if name in positions:
-                x, y = positions[name]
-                has_father = node.father in positions
-                has_mother = node.mother in positions
+            if name in self.positions:
+                x, y = self.positions[name]
+                has_father = node.father in self.positions
+                has_mother = node.mother in self.positions
                 
-                # Adjusted bracket geometry coordinates to align precisely with new 3.0 y spacing heights
                 if has_father and has_mother:
-                    fx, fy = positions[node.father]
-                    mx, my = positions[node.mother]
-                    mid_y = y + 1.5  
+                    fx, fy = self.positions[node.father]
+                    mx, my = self.positions[node.mother]
+                    mid_y = y - 250.0  
                     
-                    self.ax.plot([x, x], [y, mid_y], color='#10b981', linestyle='-', linewidth=2.5, zorder=1, clip_on=False)
-                    self.ax.plot([fx, mx], [mid_y, mid_y], color='#10b981', linestyle='-', linewidth=2.5, zorder=1, clip_on=False)
-                    self.ax.plot([fx, fx], [fy, mid_y], color='#10b981', linestyle='-', linewidth=2.5, zorder=1, clip_on=False)
-                    self.ax.plot([mx, mx], [my, mid_y], color='#10b981', linestyle='-', linewidth=2.5, zorder=1, clip_on=False)
-                    
+                    self.canvas.create_line(x, y, x, mid_y, fill='#10b981', width=3)
+                    self.canvas.create_line(fx, mid_y, mx, mid_y, fill='#10b981', width=3)
+                    self.canvas.create_line(fx, mid_y, fx, fy, fill='#10b981', width=3)
+                    self.canvas.create_line(mx, mid_y, mx, my, fill='#10b981', width=3)
                 elif has_father:
-                    fx, fy = positions[node.father]
-                    self.ax.plot([x, fx], [y, fy], color='#94a3b8', linestyle='-', linewidth=2, zorder=1, clip_on=False)
+                    fx, fy = self.positions[node.father]
+                    self.canvas.create_line(x, y, fx, fy, fill='#94a3b8', width=2)
                 elif has_mother:
-                    mx, my = positions[node.mother]
-                    self.ax.plot([x, mx], [y, my], color='#94a3b8', linestyle='-', linewidth=2, zorder=1, clip_on=False)
+                    mx, my = self.positions[node.mother]
+                    self.canvas.create_line(x, y, mx, my, fill='#94a3b8', width=2)
 
-        for name, (x, y) in positions.items():
+        pie_radius = 35.0
+        
+        for name, (x, y) in self.positions.items():
             node = self.tree[name]
+            chart_tag = f"pie_click:{name}"
             
-            # OPTIMIZATION: Scaled the structural size area up from 0.55 -> 0.95 to maximize pie chart visibility
-            size = 0.95  
-            
-            inset_ax = self.ax.inset_axes([x - size/2, y - size/2, size, size], transform=self.ax.transData)
-            inset_ax.zorder = 2
-            
-            if node.computed_ethnicities:
-                values = list(node.computed_ethnicities.values())
-                pie_colors = [self.ethnicity_colors.get(k, '#e2e8f0') for k in node.computed_ethnicities.keys()]
-                inset_ax.pie(values, labels=None, colors=pie_colors, radius=1.0)
-            else:
-                inset_ax.pie([1], colors=['#e2e8f0'], radius=1.0)
-                
-            inset_ax.axis('equal')
+            self.draw_pie_chart(x, y, pie_radius, node.computed_ethnicities)
+            self.canvas.create_oval(x - pie_radius, y - pie_radius, x + pie_radius, y + pie_radius, 
+                                    fill="", outline="", tags=(chart_tag, "interactive"))
             
             if self.show_decorations:
-                # REFACTOR: Extracted only the final text block segment to drop name overlaps cleanly
                 last_name_only = name.strip().split()[-1] if name.strip() else ""
+                text_y = y + pie_radius + 15.0
+                lbl = self.canvas.create_text(x, text_y, text=last_name_only, font=("Arial", 10, "bold"), fill="#0f172a")
                 
-                self.ax.text(x, y - (size / 1.4), last_name_only, ha='center', va='top', 
-                             fontsize=9, weight='bold',
-                             bbox=dict(boxstyle='square,pad=0.2', facecolor='#ffffff', edgecolor='#cbd5e1', alpha=0.95))
+                bbox = self.canvas.bbox(lbl)
+                padding = 4
+                bg_rect = self.canvas.create_rectangle(bbox[0]-padding, bbox[1]-padding, bbox[2]+padding, bbox[3]+padding, 
+                                                       fill="#ffffff", outline="#cbd5e1", width=1)
+                self.canvas.tag_lower(bg_rect, lbl)
                 
-                # REFACTOR: Reduced sizing pads to cleanly contain the '+' sign without bleeding into line paths
-                plus_y = y + (size / 1.4)
-                self.ax.text(x, plus_y, "+", ha='center', va='center', 
-                             fontsize=8, weight='bold', color='white',
-                             bbox=dict(boxstyle='square,pad=0.1', facecolor='#10b981', edgecolor='#047857', alpha=1.0))
+                plus_tag = f"plus_click:{name}"
+                plus_y = y - pie_radius - 15.0
                 
-                self.plus_buttons[name] = (x, plus_y)
-                
-            self.pie_centers[name] = (x, y, size / 2.0)
+                btn_r = 8
+                self.canvas.create_rectangle(x - btn_r, plus_y - btn_r, x + btn_r, plus_y + btn_r, 
+                                             fill="#10b981", outline="#047857", tags=(plus_tag, "interactive"))
+                self.canvas.create_text(x, plus_y, text="+", font=("Arial", 10, "bold"), fill="white", tags=(plus_tag, "interactive"))
 
-        if cur_xlim and cur_ylim:
-            self.ax.set_xlim(cur_xlim)
-            self.ax.set_ylim(cur_ylim)
-        else:
-            all_x = [pt[0] for pt in positions.values()]
-            all_y = [pt[1] for pt in positions.values()]
-            self.ax.set_xlim(min(all_x) - 4.0, max(all_x) + 4.0)
-            self.ax.set_ylim(min(all_y) - 2.0, max(all_y) + 3.0)
-        
-        self.canvas.draw()
+        self.canvas.scale("all", 0, 0, self.canvas_scale, self.canvas_scale)
 
     def on_press(self, event):
-        if event.xdata is None or event.ydata is None:
-            return
-            
-        click_radius = 0.4 
-        if self.show_decorations:
-            for name, (bx, by) in self.plus_buttons.items():
-                if ((event.xdata - bx)**2 + (event.ydata - by)**2)**0.5 <= click_radius:
-                    self.open_parent_dialog(name)
+        canvas_x = self.canvas.canvasx(event.x)
+        canvas_y = self.canvas.canvasy(event.y)
+        clicked_items = self.canvas.find_overlapping(canvas_x - 1, canvas_y - 1, canvas_x + 1, canvas_y + 1)
+        
+        if clicked_items:
+            tags = self.canvas.gettags(clicked_items[-1])
+            for tag in tags:
+                if tag.startswith("plus_click:"):
+                    person_name = tag.split("plus_click:")[1]
+                    self.open_parent_dialog(person_name)
                     return
-
-        for name, (px, py, pradius) in self.pie_centers.items():
-            if ((event.xdata - px)**2 + (event.ydata - py)**2)**0.5 <= pradius:
-                self.display_ethnic_breakdown(name)
-                return
-
-        if event.button == 1:
-            self.is_dragging = True
-            self.press_x = event.xdata
-            self.press_y = event.ydata
-            self.last_draw_x = event.x
-            self.last_draw_y = event.y
+                elif tag.startswith("pie_click:"):
+                    person_name = tag.split("pie_click:")[1]
+                    self.display_ethnic_breakdown(person_name)
+                    return
+                    
+        self.drag_start_x = event.x
+        self.drag_start_y = event.y
 
     def on_drag(self, event):
-        if not self.is_dragging or event.xdata is None or event.ydata is None:
-            return
-            
-        if abs(event.x - self.last_draw_x) < 4 and abs(event.y - self.last_draw_y) < 4:
-            return
-            
-        dx = self.press_x - event.xdata
-        dy = self.press_y - event.ydata
-        
-        xlim = self.ax.get_xlim()
-        ylim = self.ax.get_ylim()
-        
-        self.ax.set_xlim(xlim[0] + dx, xlim[1] + dx)
-        self.ax.set_ylim(ylim[0] + dy, ylim[1] + dy)
-        
-        self.last_draw_x = event.x
-        self.last_draw_y = event.y
-        self.canvas.draw()
-
-    def on_release(self, event):
-        self.is_dragging = False
+        dx = event.x - self.drag_start_x
+        dy = event.y - self.drag_start_y
+        self.canvas.move("all", dx, dy)
+        self.drag_start_x = event.x
+        self.drag_start_y = event.y
 
     def on_zoom(self, event):
-        if event.xdata is None or event.ydata is None:
-            return
-        zoom_factor = 0.85 if event.button == 'up' else 1.15
-        
-        xlim = self.ax.get_xlim()
-        ylim = self.ax.get_ylim()
-        
-        new_width = (xlim[1] - xlim[0]) * zoom_factor
-        new_height = (ylim[1] - ylim[0]) * zoom_factor
-        
-        rel_x = (event.xdata - xlim[0]) / (xlim[1] - xlim[0])
-        rel_y = (event.ydata - ylim[0]) / (ylim[1] - ylim[0])
-        
-        self.ax.set_xlim(event.xdata - rel_x * new_width, event.xdata + (1 - rel_x) * new_width)
-        self.ax.set_ylim(event.ydata - rel_y * new_height, event.ydata + (1 - rel_y) * new_height)
-        self.canvas.draw()
+        if event.num == 4 or event.delta > 0:  
+            factor = 1.1
+        else:                                  
+            factor = 0.9
+            
+        self.canvas_scale *= factor
+        cx = self.canvas.canvasx(event.x)
+        cy = self.canvas.canvasy(event.y)
+        self.canvas.scale("all", cx, cy, factor, factor)
 
     def display_ethnic_breakdown(self, person_name):
         if self.active_breakdown_window is not None:
@@ -369,7 +361,6 @@ class AncestryApp:
         frame_list.pack(fill=tk.BOTH, expand=True, padx=25, pady=(0, 25))
         
         data = node.computed_ethnicities or {"Unknown": 100.0}
-        
         unknown_val = data.get("Unknown", None)
         valid_items = [(k, v) for k, v in data.items() if k != "Unknown"]
         valid_items.sort(key=lambda item: item[1], reverse=True)
@@ -557,6 +548,7 @@ class AncestryApp:
                 mother=data.get("mother")
             )
             
+        self.canvas_scale = 1.0
         self.refresh_plot()
         messagebox.showinfo("Loaded", "Tree configuration imported successfully.")
         
@@ -567,7 +559,7 @@ class AncestryApp:
             self.tree.clear()
             self.ethnicity_options.clear()
             self.ethnicity_colors.clear()
-            self.press_x = None  
+            self.canvas_scale = 1.0
             self.initialize_default_tree()
 
 if __name__ == "__main__":

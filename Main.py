@@ -23,7 +23,11 @@ class AncestryApp:
         self.tree = {}  
         self.positions = {}
         
+        # Camera persistence state properties
         self.canvas_scale = 1.0
+        self.pan_x = 0.0
+        self.pan_y = 0.0
+        
         self.drag_start_x = 0
         self.drag_start_y = 0
         
@@ -199,7 +203,6 @@ class AncestryApp:
         return positions
 
     def draw_pie_chart(self, x, y, radius, ethnicities):
-        """Renders pie charts using robust polygon structures completely immune to arc-engine panics."""
         active_eth = {k: v for k, v in ethnicities.items() if v > 0}
         
         if not active_eth:
@@ -210,7 +213,6 @@ class AncestryApp:
         largest_eth, largest_val = sorted_eth[0]
         base_color = '#e2e8f0' if largest_eth == "Unknown" else self.ethnicity_colors.get(largest_eth, '#e2e8f0')
 
-        # Draw structural base background ring (handles largest eth automatically)
         self.canvas.create_oval(x - radius, y - radius, x + radius, y + radius, fill=base_color, outline="#cbd5e1", width=1)
         
         if len(active_eth) == 1:
@@ -224,15 +226,13 @@ class AncestryApp:
             if eth != largest_eth:
                 color = '#e2e8f0' if eth == "Unknown" else self.ethnicity_colors.get(eth, '#e2e8f0')
                 
-                # REVOLUTIONARY FIX: Render the slice using coordinate arrays instead of create_arc.
-                # When scaled down, these points safely move together linearly without rounding math blowing up.
                 points = [x, y]
-                steps = max(4, int(extent / 3)) # Smooth curve segmentation proportional to slice width
+                steps = max(4, int(extent / 3)) 
                 for i in range(steps + 1):
                     ang = current_angle + (extent * i / steps)
                     rad = math.radians(ang)
                     px = x + radius * math.cos(rad)
-                    py = y - radius * math.sin(rad) # standard Tkinter inverted Y translation
+                    py = y - radius * math.sin(rad)
                     points.append(px)
                     points.append(py)
                     
@@ -298,7 +298,9 @@ class AncestryApp:
                                              fill="#10b981", outline="#047857", tags=(plus_tag, "interactive"))
                 self.canvas.create_text(x, plus_y, text="+", font=("Arial", 10, "bold"), fill="white", tags=(plus_tag, "interactive"))
 
+        # FIXED CAMERA REDRAW: Reapply absolute scale from base origin, then execute global view shift offset
         self.canvas.scale("all", 0, 0, self.canvas_scale, self.canvas_scale)
+        self.canvas.move("all", self.pan_x, self.pan_y)
 
     def on_press(self, event):
         canvas_x = self.canvas.canvasx(event.x)
@@ -323,6 +325,11 @@ class AncestryApp:
     def on_drag(self, event):
         dx = event.x - self.drag_start_x
         dy = event.y - self.drag_start_y
+        
+        # Track persistent linear shift values globally
+        self.pan_x += dx
+        self.pan_y += dy
+        
         self.canvas.move("all", dx, dy)
         self.drag_start_x = event.x
         self.drag_start_y = event.y
@@ -333,9 +340,14 @@ class AncestryApp:
         else:                                  
             factor = 0.9
             
-        self.canvas_scale *= factor
         cx = self.canvas.canvasx(event.x)
         cy = self.canvas.canvasy(event.y)
+        
+        # FIXED MATRIX TRANSFORM: Track scaling shifts linearly around active mouse coordinate
+        self.pan_x = self.pan_x * factor + cx * (1.0 - factor)
+        self.pan_y = self.pan_y * factor + cy * (1.0 - factor)
+        self.canvas_scale *= factor
+        
         self.canvas.scale("all", cx, cy, factor, factor)
 
     def display_ethnic_breakdown(self, person_name):
@@ -549,6 +561,8 @@ class AncestryApp:
             )
             
         self.canvas_scale = 1.0
+        self.pan_x = 0.0
+        self.pan_y = 0.0
         self.refresh_plot()
         messagebox.showinfo("Loaded", "Tree configuration imported successfully.")
         
@@ -560,6 +574,8 @@ class AncestryApp:
             self.ethnicity_options.clear()
             self.ethnicity_colors.clear()
             self.canvas_scale = 1.0
+            self.pan_x = 0.0
+            self.pan_y = 0.0
             self.initialize_default_tree()
 
 if __name__ == "__main__":

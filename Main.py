@@ -96,16 +96,33 @@ class AncestryApp:
             if node.mother:
                 self._compute_node_heritage(node.mother, visited)
                 
-            father_dna = self.tree[node.father].computed_ethnicities if node.father and node.father in self.tree else {"Unknown": 100.0}
-            mother_dna = self.tree[node.mother].computed_ethnicities if node.mother and node.mother in self.tree else {"Unknown": 100.0}
+            has_father = node.father and node.father in self.tree
+            has_mother = node.mother and node.mother in self.tree
             
-            combined = {}
-            for eth, pct in father_dna.items():
-                combined[eth] = combined.get(eth, 0.0) + (pct * 0.5)
-            for eth, pct in mother_dna.items():
-                combined[eth] = combined.get(eth, 0.0) + (pct * 0.5)
-                
-            node.computed_ethnicities = combined
+            father_dna = self.tree[node.father].computed_ethnicities if has_father else {"Unknown": 100.0}
+            mother_dna = self.tree[node.mother].computed_ethnicities if has_mother else {"Unknown": 100.0}
+            
+            # CUSTOM EXCEPTION: Check if there's exactly one parent declared
+            is_single_parent = (node.father and not node.mother) or (node.mother and not node.father)
+            applied_exception = False
+            
+            if is_single_parent:
+                parent_dna = father_dna if has_father else mother_dna
+                # Check if that single parent is full-blooded (100% of any ethnicity)
+                for eth, pct in parent_dna.items():
+                    if abs(pct - 100.0) < 1e-5:
+                        node.computed_ethnicities = {eth: 100.0}
+                        applied_exception = True
+                        break
+            
+            # Fall back to standard blending rules if the exception doesn't apply
+            if not applied_exception:
+                combined = {}
+                for eth, pct in father_dna.items():
+                    combined[eth] = combined.get(eth, 0.0) + (pct * 0.5)
+                for eth, pct in mother_dna.items():
+                    combined[eth] = combined.get(eth, 0.0) + (pct * 0.5)
+                node.computed_ethnicities = combined
         else:
             if node.base_ethnicities:
                 count = len(node.base_ethnicities)
@@ -298,7 +315,6 @@ class AncestryApp:
                                              fill="#10b981", outline="#047857", tags=(plus_tag, "interactive"))
                 self.canvas.create_text(x, plus_y, text="+", font=("Arial", 10, "bold"), fill="white", tags=(plus_tag, "interactive"))
 
-        # FIXED CAMERA REDRAW: Reapply absolute scale from base origin, then execute global view shift offset
         self.canvas.scale("all", 0, 0, self.canvas_scale, self.canvas_scale)
         self.canvas.move("all", self.pan_x, self.pan_y)
 
@@ -326,7 +342,6 @@ class AncestryApp:
         dx = event.x - self.drag_start_x
         dy = event.y - self.drag_start_y
         
-        # Track persistent linear shift values globally
         self.pan_x += dx
         self.pan_y += dy
         
@@ -343,7 +358,6 @@ class AncestryApp:
         cx = self.canvas.canvasx(event.x)
         cy = self.canvas.canvasy(event.y)
         
-        # FIXED MATRIX TRANSFORM: Track scaling shifts linearly around active mouse coordinate
         self.pan_x = self.pan_x * factor + cx * (1.0 - factor)
         self.pan_y = self.pan_y * factor + cy * (1.0 - factor)
         self.canvas_scale *= factor

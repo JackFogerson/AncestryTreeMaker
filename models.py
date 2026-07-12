@@ -1,7 +1,7 @@
 # models.py
 
 class AncestorNode:
-    def __init__(self, name, base_ethnicities=None, father=None, mother=None, display_name="", birth_year="", death_year="", is_living=False):
+    def __init__(self, name, base_ethnicities=None, father=None, mother=None, display_name="", birth_year="", death_year="", is_living=False, locations=None):
         self.name = name
         self.display_name = display_name if display_name else name
         self.birth_year = birth_year
@@ -11,3 +11,5 @@ class AncestorNode:
         self.father = father
         self.mother = mother
         self.computed_ethnicities = {}
+        # List of dictionaries: [{'year': int, 'place': str, 'lat': float, 'lon': float}]
+        self.locations = locations if locations else []

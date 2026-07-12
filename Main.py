@@ -205,7 +205,6 @@ class AncestryApp:
             father_dna = self.tree[node.father].computed_ethnicities if has_father else {"Unknown": 100.0}
             mother_dna = self.tree[node.mother].computed_ethnicities if has_mother else {"Unknown": 100.0}
             
-            # SINGLE PARENT PERSISTENT INHERITANCE TRIGGER RULE
             is_single_parent = (node.father and not node.mother) or (node.mother and not node.father)
             applied_exception = False
             
@@ -321,7 +320,6 @@ class AncestryApp:
         return positions
 
     def reset_view_to_root(self):
-        """Forces geometry calculations and sets viewport camera coordinates to focus directly on the tree root."""
         self.root.update_idletasks()
         self.calculate_inheritance()
         self.positions = self.calculate_positions()
@@ -343,7 +341,6 @@ class AncestryApp:
             c_width = self.canvas.winfo_width()
             c_height = self.canvas.winfo_height()
             
-            # Layout geometry falls back if window dimensions haven't fired context metrics yet
             if c_width <= 1: c_width = 950
             if c_height <= 1: c_height = 800
             
@@ -390,6 +387,36 @@ class AncestryApp:
                 self.canvas.create_polygon(points, fill=color, outline="#ffffff", width=0.5)
             current_angle += extent
 
+    def get_formatted_split_name(self, name):
+        """Splits full name into 2 lines: (First + Middle) on top, (Last Name + Additions) on bottom."""
+        words = name.strip().split()
+        if not words:
+            return ""
+        if len(words) == 1:
+            return words[0]
+            
+        suffixes = {'jr', 'jr.', 'sr', 'sr.', 'iii', 'iv', 'v', 'vi', 'vii', 'viii', 'ix', 'x', '2nd', '3rd', '4th'}
+        
+        # Scan backwards to identify the last full non-suffix word index
+        last_name_idx = len(words) - 1
+        while last_name_idx >= 0:
+            word_clean = words[last_name_idx].lower().strip(',.')
+            if word_clean not in suffixes:
+                break
+            last_name_idx -= 1
+            
+        # Fallback security parameter if the entire string contains unrecognized components
+        if last_name_idx < 0:
+            last_name_idx = len(words) - 1
+            
+        # Single-word first name exception handler fallback check
+        if last_name_idx == 0:
+            return f"{words[0]}\n" + " ".join(words[1:])
+            
+        top_line = " ".join(words[:last_name_idx])
+        bottom_line = " ".join(words[last_name_idx:])
+        return f"{top_line}\n{bottom_line}"
+
     def refresh_plot(self):
         if not hasattr(self, 'canvas'): 
             return
@@ -434,12 +461,16 @@ class AncestryApp:
                                     fill="", outline="", tags=(chart_tag, "interactive"))
             
             if self.show_decorations:
-                last_name_only = name.strip().split()[-1] if name.strip() else ""
-                text_y = y + pie_radius + 15.0
-                lbl = self.canvas.create_text(x, text_y, text=last_name_only, font=("Arial", 10, "bold"), fill="#0f172a")
+                # Retrieve structural 2-line layout
+                formatted_name = self.get_formatted_split_name(name)
+                text_y = y + pie_radius + 22.0
+                
+                # Baseline text font expanded from 10 to 13
+                lbl = self.canvas.create_text(x, text_y, text=formatted_name, font=("Arial", 13, "bold"), 
+                                              fill="#0f172a", justify=tk.CENTER, tags=("node_text",))
                 
                 bbox = self.canvas.bbox(lbl)
-                padding = 4
+                padding = 5
                 bg_rect = self.canvas.create_rectangle(bbox[0]-padding, bbox[1]-padding, bbox[2]+padding, bbox[3]+padding, 
                                                        fill="#ffffff", outline="#cbd5e1", width=1)
                 self.canvas.tag_lower(bg_rect, lbl)
@@ -450,10 +481,16 @@ class AncestryApp:
                 btn_r = 8
                 self.canvas.create_rectangle(x - btn_r, plus_y - btn_r, x + btn_r, plus_y + btn_r, 
                                              fill="#10b981", outline="#047857", tags=(plus_tag, "interactive"))
-                self.canvas.create_text(x, plus_y, text="+", font=("Arial", 10, "bold"), fill="white", tags=(plus_tag, "interactive"))
+                self.canvas.create_text(x, plus_y, text="+", font=("Arial", 13, "bold"), fill="white", 
+                                        tags=(plus_tag, "interactive", "plus_text"))
 
         self.canvas.scale("all", 0, 0, self.canvas_scale, self.canvas_scale)
         self.canvas.move("all", self.pan_x, self.pan_y)
+        
+        # High-performance native font updates targeting explicit tag groups directly
+        new_font_size = max(1, int(13 * self.canvas_scale))
+        self.canvas.itemconfig("node_text", font=("Arial", new_font_size, "bold"))
+        self.canvas.itemconfig("plus_text", font=("Arial", new_font_size, "bold"))
 
     def on_press(self, event):
         canvas_x = self.canvas.canvasx(event.x)
@@ -500,6 +537,11 @@ class AncestryApp:
         self.canvas_scale *= factor
         
         self.canvas.scale("all", cx, cy, factor, factor)
+        
+        # Dynamic resizing bound explicitly to baseline 13 tracking vectors
+        new_font_size = max(1, int(13 * self.canvas_scale))
+        self.canvas.itemconfig("node_text", font=("Arial", new_font_size, "bold"))
+        self.canvas.itemconfig("plus_text", font=("Arial", new_font_size, "bold"))
 
     def display_ethnic_breakdown(self, person_name):
         if self.active_breakdown_window is not None:
@@ -721,7 +763,6 @@ class AncestryApp:
         return True
         
     def clear_tree(self):
-        # Graceful validation allowing the user to back out and save progress
         resp = messagebox.askyesnocancel(
             "Save Changes?", 
             "Would you like to save your current tree database changes before clearing the workspace?"
@@ -730,7 +771,7 @@ class AncestryApp:
         if resp is True:
             self.save_tree()
         elif resp is None:
-            return  # Cancel chosen: abort total workspace clearance routine completely
+            return  
             
         if self.active_breakdown_window:
             self.active_breakdown_window.destroy()
@@ -739,12 +780,10 @@ class AncestryApp:
         self.ethnicity_options.clear()
         self.ethnicity_colors.clear()
         
-        # Reset camera translation vectors
         self.canvas_scale = 1.0
         self.pan_x = 0.0
         self.pan_y = 0.0
         
-        # Wipe interactive canvas layout frames and redirect back to the entry wizard screen
         for widget in self.root.winfo_children():
             widget.destroy()
             

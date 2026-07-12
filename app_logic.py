@@ -6,6 +6,7 @@ import json
 import math
 from models import AncestorNode
 
+
 class AncestryApp:
     def __init__(self, root):
         self.root = root
@@ -28,6 +29,7 @@ class AncestryApp:
 
         self.active_breakdown_window = None
         self.show_decorations = True
+        self.isolated_root = None
 
         # Display the starting workflow wizard
         self.show_welcome_screen()
@@ -120,7 +122,7 @@ class AncestryApp:
                 messagebox.showwarning("Naming Error", "Please provide a valid name to create the root profile.")
                 return
 
-            self.tree[name] = AncestorNode(name)
+            self.tree[name] = AncestorNode(name=name, display_name=name)
             self.welcome_frame.destroy()
             self.setup_ui()
             self.reset_view_to_root()
@@ -158,6 +160,8 @@ class AncestryApp:
             anchor=tk.W, pady=(20, 15))
         tk.Button(control_panel, text="Toggle Names/Buttons", command=self.toggle_decorations, bg="#475569", fg="white",
                   font=("Arial", 10, "bold"), height=2).pack(fill=tk.X, pady=6)
+        tk.Button(control_panel, text="Return to Main View", command=self.reset_isolation, bg="#8b5cf6", fg="white",
+                  font=("Arial", 10, "bold"), height=2).pack(fill=tk.X, pady=6)
 
         self.canvas = tk.Canvas(self.root, bg="white", highlightthickness=0)
         self.canvas.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True)
@@ -171,6 +175,16 @@ class AncestryApp:
     def toggle_decorations(self):
         self.show_decorations = not self.show_decorations
         self.refresh_plot()
+
+    def reset_isolation(self):
+        self.isolated_root = None
+        self.reset_view_to_root()
+
+    def isolate_tree(self, person_name):
+        self.isolated_root = person_name
+        if self.active_breakdown_window:
+            self.active_breakdown_window.destroy()
+        self.reset_view_to_root()
 
     def calculate_inheritance(self):
         for node in self.tree.values():
@@ -266,14 +280,17 @@ class AncestryApp:
         if not self.tree:
             return positions
 
-        children_names = set()
-        for node in self.tree.values():
-            if node.father: children_names.add(node.father)
-            if node.mother: children_names.add(node.mother)
+        if self.isolated_root and self.isolated_root in self.tree:
+            roots = [self.isolated_root]
+        else:
+            children_names = set()
+            for node in self.tree.values():
+                if node.father: children_names.add(node.father)
+                if node.mother: children_names.add(node.mother)
 
-        roots = [name for name in self.tree if name not in children_names]
-        if not roots:
-            roots = [list(self.tree.keys())[0]]
+            roots = [name for name in self.tree if name not in children_names]
+            if not roots:
+                roots = [list(self.tree.keys())[0]]
 
         leaf_memo = {}
         scale_factor = 140.0
@@ -328,14 +345,17 @@ class AncestryApp:
         if not self.positions:
             return
 
-        children_names = set()
-        for node in self.tree.values():
-            if node.father: children_names.add(node.father)
-            if node.mother: children_names.add(node.mother)
+        if self.isolated_root and self.isolated_root in self.tree:
+            roots = [self.isolated_root]
+        else:
+            children_names = set()
+            for node in self.tree.values():
+                if node.father: children_names.add(node.father)
+                if node.mother: children_names.add(node.mother)
 
-        roots = [name for name in self.tree if name not in children_names]
-        if not roots:
-            roots = list(self.tree.keys())
+            roots = [name for name in self.tree if name not in children_names]
+            if not roots:
+                roots = list(self.tree.keys())
 
         if roots and roots[0] in self.positions:
             rx, ry = self.positions[roots[0]]
@@ -460,7 +480,13 @@ class AncestryApp:
                                     fill="", outline="", tags=(chart_tag, "interactive"))
 
             if self.show_decorations:
-                formatted_name = self.get_formatted_split_name(name)
+                formatted_name = self.get_formatted_split_name(node.display_name)
+
+                if node.birth_year or node.death_year or node.is_living:
+                    b_str = node.birth_year if node.birth_year else "?"
+                    d_str = "Present" if node.is_living else (node.death_year if node.death_year else "?")
+                    formatted_name += f"\n({b_str} - {d_str})"
+
                 text_y = y + pie_radius + 22.0
 
                 lbl = self.canvas.create_text(x, text_y, text=formatted_name, font=("Arial", 13, "bold"),
@@ -550,18 +576,20 @@ class AncestryApp:
         self.active_breakdown_window = tk.Toplevel(self.root)
         breakdown_window = self.active_breakdown_window
 
-        breakdown_window.title(f"Composition Breakdown: {person_name}")
-        breakdown_window.geometry("380x450")
+        d_name = node.display_name
+
+        breakdown_window.title(f"Composition Breakdown: {d_name}")
+        breakdown_window.geometry("380x520")
         breakdown_window.configure(bg="#f8fafc")
         breakdown_window.transient(self.root)
 
-        tk.Label(breakdown_window, text=person_name, font=("Arial", 16, "bold"), fg="#1e293b", bg="#f8fafc").pack(
+        tk.Label(breakdown_window, text=d_name, font=("Arial", 16, "bold"), fg="#1e293b", bg="#f8fafc").pack(
             pady=(20, 5))
         tk.Label(breakdown_window, text="Inherited Ancestry Composition", font=("Arial", 10, "italic"), fg="#64748b",
                  bg="#f8fafc").pack(pady=(0, 15))
 
         frame_list = tk.Frame(breakdown_window, bg="white", bd=1, relief=tk.SOLID, padx=15, pady=15)
-        frame_list.pack(fill=tk.BOTH, expand=True, padx=25, pady=(0, 25))
+        frame_list.pack(fill=tk.BOTH, expand=True, padx=25, pady=(0, 15))
 
         data = node.computed_ethnicities or {"Unknown": 100.0}
         unknown_val = data.get("Unknown", None)
@@ -587,62 +615,141 @@ class AncestryApp:
                      fg="#334155" if eth != "Unknown" else "#64748b", bg="white").pack(side=tk.LEFT)
             tk.Label(row, text=f"{pct:.2f}%", font=("Arial", 11, "bold"), fg="#0f172a", bg="white").pack(side=tk.RIGHT)
 
+        btn_frame = tk.Frame(breakdown_window, bg="#f8fafc")
+        btn_frame.pack(fill=tk.X, padx=25, pady=(0, 20))
+
+        tk.Button(btn_frame, text="Isolate Ancestors", command=lambda: self.isolate_tree(person_name),
+                  bg="#8b5cf6", fg="white", font=("Arial", 10, "bold"), height=2).pack(fill=tk.X)
+
     def open_parent_dialog(self, person_name):
         dialog = tk.Toplevel(self.root)
         dialog.title(f"Manage Profile: {person_name}")
-        dialog.geometry("560x700")
+        dialog.geometry("620x760")
         dialog.transient(self.root)
         dialog.grab_set()
 
         node = self.tree[person_name]
 
         tk.Label(dialog, text=f"Editing Family Network for:", font=("Arial", 10)).pack(pady=(12, 2))
-        tk.Label(dialog, text=person_name, font=("Arial", 14, "bold"), fg="#047857").pack(pady=(0, 12))
+        tk.Label(dialog, text=node.display_name, font=("Arial", 14, "bold"), fg="#047857").pack(pady=(0, 12))
 
-        # --- Father Entry Row Layout ---
-        f_frame = tk.Frame(dialog)
-        f_frame.pack(fill=tk.X, padx=30, pady=(5, 10))
+        # --- Father Entry Group ---
+        f_group = tk.LabelFrame(dialog, text=" Father's Profile ", font=("Arial", 10, "bold"), padx=10, pady=10,
+                                bg="#f8fafc")
+        f_group.pack(fill=tk.X, padx=30, pady=(5, 10))
 
-        f_name_sub = tk.Frame(f_frame)
-        f_name_sub.pack(side=tk.LEFT, fill=tk.X, expand=True)
-        tk.Label(f_name_sub, text="Father's Full Name:", font=("Arial", 10, "bold")).pack(anchor=tk.W)
-        f_entry = tk.Entry(f_name_sub, font=("Arial", 10), width=30)
-        f_entry.insert(0, node.father or "")
-        f_entry.pack(anchor=tk.W, pady=(2, 0))
+        f_row1 = tk.Frame(f_group, bg="#f8fafc")
+        f_row1.pack(fill=tk.X)
+        tk.Label(f_row1, text="Full Name:", font=("Arial", 9, "bold"), width=10, anchor=tk.W, bg="#f8fafc").pack(
+            side=tk.LEFT)
+        f_entry = tk.Entry(f_row1, font=("Arial", 10), width=24)
+        f_entry.pack(side=tk.LEFT, padx=(0, 15))
 
-        f_eth_sub = tk.Frame(f_frame)
-        f_eth_sub.pack(side=tk.RIGHT, padx=(10, 0))
-        tk.Label(f_eth_sub, text="Father Ethnicity:", font=("Arial", 10, "bold")).pack(anchor=tk.W)
-        f_combo = ttk.Combobox(f_eth_sub, values=["None"] + self.ethnicity_options, width=16, state="readonly")
+        tk.Label(f_row1, text="Ethnicity:", font=("Arial", 9, "bold"), anchor=tk.W, bg="#f8fafc").pack(side=tk.LEFT,
+                                                                                                       padx=(0, 5))
+        f_combo = ttk.Combobox(f_row1, values=["None"] + self.ethnicity_options, width=14, state="readonly")
+        f_combo.pack(side=tk.LEFT)
+
+        f_row2 = tk.Frame(f_group, bg="#f8fafc")
+        f_row2.pack(fill=tk.X, pady=(10, 0))
+        tk.Label(f_row2, text="Birth Year:", font=("Arial", 9, "bold"), width=10, anchor=tk.W, bg="#f8fafc").pack(
+            side=tk.LEFT)
+        f_birth_entry = tk.Entry(f_row2, font=("Arial", 10), width=10)
+        f_birth_entry.pack(side=tk.LEFT, padx=(0, 15))
+
+        tk.Label(f_row2, text="Death Year:", font=("Arial", 9, "bold"), anchor=tk.W, bg="#f8fafc").pack(side=tk.LEFT,
+                                                                                                        padx=(0, 5))
+        f_death_entry = tk.Entry(f_row2, font=("Arial", 10), width=10)
+        f_death_entry.pack(side=tk.LEFT, padx=(0, 10))
+
+        f_living_var = tk.BooleanVar()
+
+        def toggle_f_death():
+            if f_living_var.get():
+                f_death_entry.delete(0, tk.END)
+                f_death_entry.config(state=tk.DISABLED)
+            else:
+                f_death_entry.config(state=tk.NORMAL)
+
+        tk.Checkbutton(f_row2, text="Currently Living", variable=f_living_var, command=toggle_f_death,
+                       bg="#f8fafc").pack(side=tk.LEFT)
 
         father_node = self.tree.get(node.father) if node.father else None
-        init_f_eth = father_node.base_ethnicities[0] if (father_node and father_node.base_ethnicities) else "None"
+        if father_node:
+            f_entry.insert(0, father_node.display_name)
+            f_birth_entry.insert(0, father_node.birth_year)
+            if father_node.is_living:
+                f_living_var.set(True)
+                toggle_f_death()
+            else:
+                f_death_entry.insert(0, father_node.death_year)
+            init_f_eth = father_node.base_ethnicities[0] if father_node.base_ethnicities else "None"
+        else:
+            f_entry.insert(0, node.father or "")
+            init_f_eth = "None"
+
         if init_f_eth not in self.ethnicity_options: init_f_eth = "None"
         f_combo.set(init_f_eth)
-        f_combo.pack(anchor=tk.W, pady=(2, 0))
 
-        # --- Mother Entry Row Layout ---
-        m_frame = tk.Frame(dialog)
-        m_frame.pack(fill=tk.X, padx=30, pady=(5, 15))
+        # --- Mother Entry Group ---
+        m_group = tk.LabelFrame(dialog, text=" Mother's Profile ", font=("Arial", 10, "bold"), padx=10, pady=10,
+                                bg="#f8fafc")
+        m_group.pack(fill=tk.X, padx=30, pady=(5, 10))
 
-        m_name_sub = tk.Frame(m_frame)
-        m_name_sub.pack(side=tk.LEFT, fill=tk.X, expand=True)
-        tk.Label(m_name_sub, text="Mother's Full Name:", font=("Arial", 10, "bold")).pack(anchor=tk.W)
-        m_entry = tk.Entry(m_name_sub, font=("Arial", 10), width=30)
-        m_entry.insert(0, node.mother or "")
-        m_entry.pack(anchor=tk.W, pady=(2, 0))
+        m_row1 = tk.Frame(m_group, bg="#f8fafc")
+        m_row1.pack(fill=tk.X)
+        tk.Label(m_row1, text="Full Name:", font=("Arial", 9, "bold"), width=10, anchor=tk.W, bg="#f8fafc").pack(
+            side=tk.LEFT)
+        m_entry = tk.Entry(m_row1, font=("Arial", 10), width=24)
+        m_entry.pack(side=tk.LEFT, padx=(0, 15))
 
-        m_eth_sub = tk.Frame(m_frame)
-        m_eth_sub.pack(side=tk.RIGHT, padx=(10, 0))
-        tk.Label(m_eth_sub, text="Mother Ethnicity:", font=("Arial", 10, "bold")).pack(anchor=tk.W)
-        m_combo = ttk.Combobox(m_eth_sub, values=["None"] + self.ethnicity_options, width=16, state="readonly")
+        tk.Label(m_row1, text="Ethnicity:", font=("Arial", 9, "bold"), anchor=tk.W, bg="#f8fafc").pack(side=tk.LEFT,
+                                                                                                       padx=(0, 5))
+        m_combo = ttk.Combobox(m_row1, values=["None"] + self.ethnicity_options, width=14, state="readonly")
+        m_combo.pack(side=tk.LEFT)
+
+        m_row2 = tk.Frame(m_group, bg="#f8fafc")
+        m_row2.pack(fill=tk.X, pady=(10, 0))
+        tk.Label(m_row2, text="Birth Year:", font=("Arial", 9, "bold"), width=10, anchor=tk.W, bg="#f8fafc").pack(
+            side=tk.LEFT)
+        m_birth_entry = tk.Entry(m_row2, font=("Arial", 10), width=10)
+        m_birth_entry.pack(side=tk.LEFT, padx=(0, 15))
+
+        tk.Label(m_row2, text="Death Year:", font=("Arial", 9, "bold"), anchor=tk.W, bg="#f8fafc").pack(side=tk.LEFT,
+                                                                                                        padx=(0, 5))
+        m_death_entry = tk.Entry(m_row2, font=("Arial", 10), width=10)
+        m_death_entry.pack(side=tk.LEFT, padx=(0, 10))
+
+        m_living_var = tk.BooleanVar()
+
+        def toggle_m_death():
+            if m_living_var.get():
+                m_death_entry.delete(0, tk.END)
+                m_death_entry.config(state=tk.DISABLED)
+            else:
+                m_death_entry.config(state=tk.NORMAL)
+
+        tk.Checkbutton(m_row2, text="Currently Living", variable=m_living_var, command=toggle_m_death,
+                       bg="#f8fafc").pack(side=tk.LEFT)
 
         mother_node = self.tree.get(node.mother) if node.mother else None
-        init_m_eth = mother_node.base_ethnicities[0] if (mother_node and mother_node.base_ethnicities) else "None"
+        if mother_node:
+            m_entry.insert(0, mother_node.display_name)
+            m_birth_entry.insert(0, mother_node.birth_year)
+            if mother_node.is_living:
+                m_living_var.set(True)
+                toggle_m_death()
+            else:
+                m_death_entry.insert(0, mother_node.death_year)
+            init_m_eth = mother_node.base_ethnicities[0] if mother_node.base_ethnicities else "None"
+        else:
+            m_entry.insert(0, node.mother or "")
+            init_m_eth = "None"
+
         if init_m_eth not in self.ethnicity_options: init_m_eth = "None"
         m_combo.set(init_m_eth)
-        m_combo.pack(anchor=tk.W, pady=(2, 0))
 
+        # --- Customization and Checks ---
         custom_frame = tk.Frame(dialog)
         custom_frame.pack(fill=tk.X, padx=30, pady=(0, 10))
         tk.Label(custom_frame, text="Add New Ethnicity:", font=("Arial", 10, "bold")).pack(side=tk.LEFT)
@@ -696,7 +803,6 @@ class AncestryApp:
                 new_eth_entry.delete(0, tk.END)
                 render_checkboxes()
 
-                # Refresh parent dropdown inputs to match custom list additions instantly
                 f_combo['values'] = ["None"] + self.ethnicity_options
                 m_combo['values'] = ["None"] + self.ethnicity_options
             elif new_eth in self.ethnicity_options:
@@ -710,71 +816,130 @@ class AncestryApp:
             old_father = node.father
             old_mother = node.mother
 
-            new_father = f_entry.get().strip() or None
-            new_mother = m_entry.get().strip() or None
+            f_name_val = f_entry.get().strip()
+            f_birth_val = f_birth_entry.get().strip()
+            f_death_val = f_death_entry.get().strip()
+            f_is_living = f_living_var.get()
+
+            m_name_val = m_entry.get().strip()
+            m_birth_val = m_birth_entry.get().strip()
+            m_death_val = m_death_entry.get().strip()
+            m_is_living = m_living_var.get()
+
+            # Construct internal unique IDs by appending the years/status
+            new_father_id = None
+            if f_name_val:
+                if not f_birth_val and not f_death_val and not f_is_living:
+                    new_father_id = f_name_val
+                else:
+                    b_str = f_birth_val if f_birth_val else "?"
+                    d_str = "Present" if f_is_living else (f_death_val if f_death_val else "?")
+                    new_father_id = f"{f_name_val} ({b_str} - {d_str})"
+
+            new_mother_id = None
+            if m_name_val:
+                if not m_birth_val and not m_death_val and not m_is_living:
+                    new_mother_id = m_name_val
+                else:
+                    b_str = m_birth_val if m_birth_val else "?"
+                    d_str = "Present" if m_is_living else (m_death_val if m_death_val else "?")
+                    new_mother_id = f"{m_name_val} ({b_str} - {d_str})"
 
             # --- Verification Routine for Duplicate Profiling ---
-            if new_father and new_father != old_father and new_father in self.tree:
+            if new_father_id and new_father_id != old_father and new_father_id in self.tree:
                 confirm = messagebox.askyesno(
                     "Duplicate Profile Detected",
-                    f"A profile named '{new_father}' already exists in the tree.\n\nDo you want to merge/link to this existing profile? Click 'No' to abort and rename."
+                    f"A profile matching '{new_father_id}' already exists in the tree.\n\nDo you want to merge/link to this existing profile? Click 'No' to abort and change the details."
                 )
                 if not confirm:
                     messagebox.showinfo("Action Required",
-                                        "Please change the Father's full name field to a unique description before saving.")
+                                        "Please change the Father's details to unique information before saving.")
                     return
 
-            if new_mother and new_mother != old_mother and new_mother in self.tree:
+            if new_mother_id and new_mother_id != old_mother and new_mother_id in self.tree:
                 confirm = messagebox.askyesno(
                     "Duplicate Profile Detected",
-                    f"A profile named '{new_mother}' already exists in the tree.\n\nDo you want to merge/link to this existing profile? Click 'No' to abort and rename."
+                    f"A profile matching '{new_mother_id}' already exists in the tree.\n\nDo you want to merge/link to this existing profile? Click 'No' to abort and change the details."
                 )
                 if not confirm:
                     messagebox.showinfo("Action Required",
-                                        "Please change the Mother's full name field to a unique description before saving.")
+                                        "Please change the Mother's details to unique information before saving.")
                     return
 
             selected_ethnicities = [eth for eth, var in vars_dict.items() if var.get()]
             node.base_ethnicities = selected_ethnicities
 
             # --- Father Link Updates ---
-            if old_father != new_father:
-                if new_father:
-                    if new_father not in self.tree:
+            if old_father != new_father_id:
+                if new_father_id:
+                    if new_father_id not in self.tree:
                         if old_father and old_father in self.tree:
                             parent_node = self.tree.pop(old_father)
-                            parent_node.name = new_father
-                            self.tree[new_father] = parent_node
+                            parent_node.name = new_father_id
+                            parent_node.display_name = f_name_val
+                            parent_node.birth_year = f_birth_val
+                            parent_node.death_year = "" if f_is_living else f_death_val
+                            parent_node.is_living = f_is_living
+                            self.tree[new_father_id] = parent_node
+
                             for n in self.tree.values():
-                                if n.father == old_father: n.father = new_father
-                                if n.mother == old_father: n.mother = new_father
+                                if n.father == old_father: n.father = new_father_id
+                                if n.mother == old_father: n.mother = new_father_id
                         else:
-                            self.tree[new_father] = AncestorNode(new_father)
-                node.father = new_father
+                            self.tree[new_father_id] = AncestorNode(
+                                name=new_father_id,
+                                display_name=f_name_val,
+                                birth_year=f_birth_val,
+                                death_year="" if f_is_living else f_death_val,
+                                is_living=f_is_living
+                            )
+                node.father = new_father_id
+            else:
+                if new_father_id and new_father_id in self.tree:
+                    self.tree[new_father_id].display_name = f_name_val
+                    self.tree[new_father_id].birth_year = f_birth_val
+                    self.tree[new_father_id].death_year = "" if f_is_living else f_death_val
+                    self.tree[new_father_id].is_living = f_is_living
 
             # --- Mother Link Updates ---
-            if old_mother != new_mother:
-                if new_mother:
-                    if new_mother not in self.tree:
+            if old_mother != new_mother_id:
+                if new_mother_id:
+                    if new_mother_id not in self.tree:
                         if old_mother and old_mother in self.tree:
                             parent_node = self.tree.pop(old_mother)
-                            parent_node.name = new_mother
-                            self.tree[new_mother] = parent_node
+                            parent_node.name = new_mother_id
+                            parent_node.display_name = m_name_val
+                            parent_node.birth_year = m_birth_val
+                            parent_node.death_year = "" if m_is_living else m_death_val
+                            parent_node.is_living = m_is_living
+                            self.tree[new_mother_id] = parent_node
+
                             for n in self.tree.values():
-                                if n.father == old_mother: n.father = new_mother
-                                if n.mother == old_mother: n.mother = new_mother
+                                if n.father == old_mother: n.father = new_mother_id
+                                if n.mother == old_mother: n.mother = new_mother_id
                         else:
-                            self.tree[new_mother] = AncestorNode(new_mother)
-                node.mother = new_mother
+                            self.tree[new_mother_id] = AncestorNode(
+                                name=new_mother_id,
+                                display_name=m_name_val,
+                                birth_year=m_birth_val,
+                                death_year="" if m_is_living else m_death_val,
+                                is_living=m_is_living
+                            )
+                node.mother = new_mother_id
+            else:
+                if new_mother_id and new_mother_id in self.tree:
+                    self.tree[new_mother_id].display_name = m_name_val
+                    self.tree[new_mother_id].birth_year = m_birth_val
+                    self.tree[new_mother_id].death_year = "" if m_is_living else m_death_val
+                    self.tree[new_mother_id].is_living = m_is_living
 
-            # --- Apply Custom Dropdown Selection Directly to Profiles ---
-            if new_father and new_father in self.tree:
+            if new_father_id and new_father_id in self.tree:
                 f_eth = f_combo.get()
-                self.tree[new_father].base_ethnicities = [f_eth] if f_eth != "None" else []
+                self.tree[new_father_id].base_ethnicities = [f_eth] if f_eth != "None" else []
 
-            if new_mother and new_mother in self.tree:
+            if new_mother_id and new_mother_id in self.tree:
                 m_eth = m_combo.get()
-                self.tree[new_mother].base_ethnicities = [m_eth] if m_eth != "None" else []
+                self.tree[new_mother_id].base_ethnicities = [m_eth] if m_eth != "None" else []
 
             dialog.destroy()
             self.refresh_plot()
@@ -794,6 +959,10 @@ class AncestryApp:
         for name, node in self.tree.items():
             serializable_data["nodes"][name] = {
                 "name": node.name,
+                "display_name": node.display_name,
+                "birth_year": node.birth_year,
+                "death_year": node.death_year,
+                "is_living": node.is_living,
                 "base_ethnicities": node.base_ethnicities,
                 "father": node.father,
                 "mother": node.mother
@@ -819,6 +988,10 @@ class AncestryApp:
         for name, data in nodes_source.items():
             self.tree[name] = AncestorNode(
                 name=data["name"],
+                display_name=data.get("display_name", data["name"]),
+                birth_year=data.get("birth_year", ""),
+                death_year=data.get("death_year", ""),
+                is_living=data.get("is_living", False),
                 base_ethnicities=data.get("base_ethnicities", []),
                 father=data.get("father"),
                 mother=data.get("mother")
@@ -828,6 +1001,7 @@ class AncestryApp:
             self.welcome_frame.destroy()
             self.setup_ui()
 
+        self.isolated_root = None
         self.reset_view_to_root()
         messagebox.showinfo("Loaded", "Tree configuration imported successfully.")
         return True
@@ -853,6 +1027,7 @@ class AncestryApp:
         self.canvas_scale = 1.0
         self.pan_x = 0.0
         self.pan_y = 0.0
+        self.isolated_root = None
 
         for widget in self.root.winfo_children():
             widget.destroy()

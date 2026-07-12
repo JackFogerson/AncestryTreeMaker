@@ -14,7 +14,7 @@ class AncestorNode:
 class AncestryApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("Ultra-Fast Ancestry Canvas Tree")
+        self.root.title("Ancestor Tree Creator")
         self.root.geometry("1200x800")
         
         self.ethnicity_options = []
@@ -34,13 +34,116 @@ class AncestryApp:
         self.active_breakdown_window = None
         self.show_decorations = True
         
-        self.setup_ui()
-        self.initialize_default_tree()
+        # Display the starting workflow wizard
+        self.show_welcome_screen()
+
+    def show_welcome_screen(self):
+        self.welcome_frame = tk.Frame(self.root, bg="#f8fafc")
+        self.welcome_frame.pack(fill=tk.BOTH, expand=True)
         
-    def initialize_default_tree(self):
-        if not self.tree:
-            self.tree["Jack Fogerson"] = AncestorNode("Jack Fogerson")
-            self.refresh_plot()
+        tk.Label(
+            self.welcome_frame, 
+            text="Ancestor Tree Creator", 
+            font=("Arial", 28, "bold"), 
+            bg="#f8fafc", 
+            fg="#1e293b"
+        ).pack(pady=(150, 10))
+        
+        tk.Label(
+            self.welcome_frame, 
+            text="Select an option below to initialize your lineage tree workspace.", 
+            font=("Arial", 12), 
+            bg="#f8fafc", 
+            fg="#64748b"
+        ).pack(pady=(0, 40))
+        
+        btn_frame = tk.Frame(self.welcome_frame, bg="#f8fafc")
+        btn_frame.pack()
+        
+        tk.Button(
+            btn_frame, 
+            text="Create New Tree", 
+            command=self.setup_new_tree_input, 
+            bg="#10b981", 
+            fg="white", 
+            font=("Arial", 12, "bold"), 
+            width=22, 
+            height=2, 
+            bd=0, 
+            cursor="hand2"
+        ).grid(row=0, column=0, padx=15)
+        
+        tk.Button(
+            btn_frame, 
+            text="Load Existing Tree", 
+            command=lambda: self.load_tree(from_welcome=True), 
+            bg="#2196F3", 
+            fg="white", 
+            font=("Arial", 12, "bold"), 
+            width=22, 
+            height=2, 
+            bd=0, 
+            cursor="hand2"
+        ).grid(row=0, column=1, padx=15)
+
+    def setup_new_tree_input(self):
+        for widget in self.welcome_frame.winfo_children():
+            widget.destroy()
+            
+        tk.Label(
+            self.welcome_frame, 
+            text="Ancestor Tree Creator", 
+            font=("Arial", 28, "bold"), 
+            bg="#f8fafc", 
+            fg="#1e293b"
+        ).pack(pady=(150, 10))
+        
+        tk.Label(
+            self.welcome_frame, 
+            text="Enter the full name of the primary root person:", 
+            font=("Arial", 12), 
+            bg="#f8fafc", 
+            fg="#64748b"
+        ).pack(pady=(0, 20))
+        
+        name_entry = tk.Entry(
+            self.welcome_frame, 
+            font=("Arial", 14), 
+            width=32, 
+            bd=1, 
+            relief=tk.SOLID, 
+            highlightthickness=4, 
+            highlightbackground="#e2e8f0", 
+            highlightcolor="#cbd5e1"
+        )
+        name_entry.pack(pady=10)
+        name_entry.focus_set()
+        
+        def confirm_name(event=None):
+            name = name_entry.get().strip()
+            if not name:
+                messagebox.showwarning("Naming Error", "Please provide a valid name to create the root profile.")
+                return
+            
+            self.tree[name] = AncestorNode(name)
+            self.welcome_frame.destroy()
+            self.setup_ui()
+            self.reset_view_to_root()
+            
+        name_entry.bind("<Return>", confirm_name)
+        
+        tk.Button(
+            self.welcome_frame, 
+            text="Initialize Workspace", 
+            command=confirm_name, 
+            bg="#10b981", 
+            fg="white", 
+            font=("Arial", 12, "bold"), 
+            width=22, 
+            height=2, 
+            bd=0, 
+            cursor="hand2"
+        ).pack(pady=20)
 
     def setup_ui(self):
         control_panel = tk.Frame(self.root, width=250, padx=15, pady=15, bg="#f8fafc")
@@ -49,8 +152,8 @@ class AncestryApp:
         tk.Label(control_panel, text="File Actions", font=("Arial", 14, "bold"), bg="#f8fafc", fg="#1e293b").pack(anchor=tk.W, pady=(0,15))
         
         tk.Button(control_panel, text="Save Tree JSON", command=self.save_tree, bg="#2196F3", fg="white", font=("Arial", 10, "bold"), height=2).pack(fill=tk.X, pady=6)
-        tk.Button(control_panel, text="Load Tree JSON", command=self.load_tree, bg="#FF9800", fg="white", font=("Arial", 10, "bold"), height=2).pack(fill=tk.X, pady=6)
-        tk.Button(control_panel, text="Clear Tree", command=self.clear_tree, bg="#f44336", fg="white", font=("Arial", 10, "bold"), height=2).pack(fill=tk.X, pady=6)
+        tk.Button(control_panel, text="Load Tree JSON", command=lambda: self.load_tree(from_welcome=False), bg="#FF9800", fg="white", font=("Arial", 10, "bold"), height=2).pack(fill=tk.X, pady=6)
+        tk.Button(control_panel, text="Clear Tree Workspace", command=self.clear_tree, bg="#f44336", fg="white", font=("Arial", 10, "bold"), height=2).pack(fill=tk.X, pady=6)
         
         tk.Label(control_panel, text="View Actions", font=("Arial", 14, "bold"), bg="#f8fafc", fg="#1e293b").pack(anchor=tk.W, pady=(20,15))
         tk.Button(control_panel, text="Toggle Names/Buttons", command=self.toggle_decorations, bg="#475569", fg="white", font=("Arial", 10, "bold"), height=2).pack(fill=tk.X, pady=6)
@@ -102,20 +205,18 @@ class AncestryApp:
             father_dna = self.tree[node.father].computed_ethnicities if has_father else {"Unknown": 100.0}
             mother_dna = self.tree[node.mother].computed_ethnicities if has_mother else {"Unknown": 100.0}
             
-            # CUSTOM EXCEPTION: Check if there's exactly one parent declared
+            # SINGLE PARENT PERSISTENT INHERITANCE TRIGGER RULE
             is_single_parent = (node.father and not node.mother) or (node.mother and not node.father)
             applied_exception = False
             
             if is_single_parent:
                 parent_dna = father_dna if has_father else mother_dna
-                # Check if that single parent is full-blooded (100% of any ethnicity)
                 for eth, pct in parent_dna.items():
                     if abs(pct - 100.0) < 1e-5:
                         node.computed_ethnicities = {eth: 100.0}
                         applied_exception = True
                         break
             
-            # Fall back to standard blending rules if the exception doesn't apply
             if not applied_exception:
                 combined = {}
                 for eth, pct in father_dna.items():
@@ -219,6 +320,39 @@ class AncestryApp:
             
         return positions
 
+    def reset_view_to_root(self):
+        """Forces geometry calculations and sets viewport camera coordinates to focus directly on the tree root."""
+        self.root.update_idletasks()
+        self.calculate_inheritance()
+        self.positions = self.calculate_positions()
+        
+        if not self.positions:
+            return
+            
+        children_names = set()
+        for node in self.tree.values():
+            if node.father: children_names.add(node.father)
+            if node.mother: children_names.add(node.mother)
+            
+        roots = [name for name in self.tree if name not in children_names]
+        if not roots:  
+            roots = list(self.tree.keys())
+            
+        if roots and roots[0] in self.positions:
+            rx, ry = self.positions[roots[0]]
+            c_width = self.canvas.winfo_width()
+            c_height = self.canvas.winfo_height()
+            
+            # Layout geometry falls back if window dimensions haven't fired context metrics yet
+            if c_width <= 1: c_width = 950
+            if c_height <= 1: c_height = 800
+            
+            self.canvas_scale = 1.0
+            self.pan_x = (c_width / 2.0) - rx
+            self.pan_y = (c_height / 2.0) - ry
+            
+        self.refresh_plot()
+
     def draw_pie_chart(self, x, y, radius, ethnicities):
         active_eth = {k: v for k, v in ethnicities.items() if v > 0}
         
@@ -257,6 +391,9 @@ class AncestryApp:
             current_angle += extent
 
     def refresh_plot(self):
+        if not hasattr(self, 'canvas'): 
+            return
+            
         self.canvas.delete("all")
         self.calculate_inheritance()  
         self.positions = self.calculate_positions()
@@ -554,9 +691,10 @@ class AncestryApp:
             json.dump(serializable_data, f, indent=4)
         messagebox.showinfo("Saved", "Tree state successfully exported.")
 
-    def load_tree(self):
+    def load_tree(self, from_welcome=False):
         file_path = filedialog.askopenfilename(filetypes=[("JSON Files", "*.json")])
-        if not file_path: return
+        if not file_path: 
+            return False
             
         with open(file_path, 'r') as f:
             raw_data = json.load(f)
@@ -573,24 +711,44 @@ class AncestryApp:
                 father=data.get("father"),
                 mother=data.get("mother")
             )
+        
+        if from_welcome:
+            self.welcome_frame.destroy()
+            self.setup_ui()
             
+        self.reset_view_to_root()
+        messagebox.showinfo("Loaded", "Tree configuration imported successfully.")
+        return True
+        
+    def clear_tree(self):
+        # Graceful validation allowing the user to back out and save progress
+        resp = messagebox.askyesnocancel(
+            "Save Changes?", 
+            "Would you like to save your current tree database changes before clearing the workspace?"
+        )
+        
+        if resp is True:
+            self.save_tree()
+        elif resp is None:
+            return  # Cancel chosen: abort total workspace clearance routine completely
+            
+        if self.active_breakdown_window:
+            self.active_breakdown_window.destroy()
+            
+        self.tree.clear()
+        self.ethnicity_options.clear()
+        self.ethnicity_colors.clear()
+        
+        # Reset camera translation vectors
         self.canvas_scale = 1.0
         self.pan_x = 0.0
         self.pan_y = 0.0
-        self.refresh_plot()
-        messagebox.showinfo("Loaded", "Tree configuration imported successfully.")
         
-    def clear_tree(self):
-        if messagebox.askyesno("Confirm", "Are you sure you want to drop the active workspace state?"):
-            if self.active_breakdown_window:
-                self.active_breakdown_window.destroy()
-            self.tree.clear()
-            self.ethnicity_options.clear()
-            self.ethnicity_colors.clear()
-            self.canvas_scale = 1.0
-            self.pan_x = 0.0
-            self.pan_y = 0.0
-            self.initialize_default_tree()
+        # Wipe interactive canvas layout frames and redirect back to the entry wizard screen
+        for widget in self.root.winfo_children():
+            widget.destroy()
+            
+        self.show_welcome_screen()
 
 if __name__ == "__main__":
     root = tk.Tk()

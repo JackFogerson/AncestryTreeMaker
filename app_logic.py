@@ -124,7 +124,9 @@ class AncestryApp:
                 messagebox.showwarning("Naming Error", "Please provide a valid name to create the root profile.")
                 return
 
-            self.tree[name] = AncestorNode(name=name, display_name=name)
+            node = AncestorNode(name=name, display_name=name)
+            node.signifiers = []
+            self.tree[name] = node
             self.welcome_frame.destroy()
             self.setup_ui()
             self.reset_view_to_root()
@@ -187,7 +189,8 @@ class AncestryApp:
         self.map_playing = False
         self.is_moving = False
         self.move_t = 1.0
-        self.timeline_speed = 800  # Milliseconds per year/move phase
+        self.timeline_speed = 800
+        self.scatter_points = []
 
         # --- Top Control Panel ---
         ctrl_frame = tk.Frame(map_win, bg="#0f172a")
@@ -200,9 +203,8 @@ class AncestryApp:
         tk.Button(ctrl_frame, text="⏪ Restart", command=self.restart_map, bg="#3b82f6", fg="white",
                   font=("Arial", 11, "bold"), width=15).pack(side=tk.LEFT, padx=10)
 
-        tk.Frame(ctrl_frame, width=2, bg="#334155").pack(side=tk.LEFT, fill=tk.Y, padx=15, pady=5)  # Separator
+        tk.Frame(ctrl_frame, width=2, bg="#334155").pack(side=tk.LEFT, fill=tk.Y, padx=15, pady=5)
 
-        # Bounds Controls
         tk.Label(ctrl_frame, text="Map Bounds:", bg="#0f172a", fg="white", font=("Arial", 11, "bold")).pack(
             side=tk.LEFT, padx=(0, 5))
 
@@ -253,7 +255,6 @@ class AncestryApp:
                 self.canvas_widget.draw_idle()
             elif val == "North America & Europe":
                 self.bounds_frame.pack_forget()
-                # Updated coordinates based on user request
                 self.map_ax.set_extent([-140, 45, 20, 90], crs=ccrs.PlateCarree())
                 self.canvas_widget.draw_idle()
             elif val == "Custom":
@@ -278,28 +279,62 @@ class AncestryApp:
                                         justify=tk.CENTER)
         self.map_names_label.pack(pady=5)
 
-        # --- Matplotlib Canvas Setup ---
+        # --- Matplotlib Canvas Setup (Full Space & Margins Removed) ---
         self.map_fig = plt.Figure(figsize=(12, 8), dpi=100, facecolor='#0f172a')
+        self.map_fig.subplots_adjust(left=0.0, right=1.0, bottom=0.0, top=1.0)
         self.map_ax = self.map_fig.add_subplot(1, 1, 1, projection=ccrs.Robinson())
         self.map_ax.set_facecolor('#0f172a')
 
-        # Add Geographic Features
         self.map_ax.add_feature(cfeature.OCEAN, facecolor='#0f172a')
         self.map_ax.add_feature(cfeature.LAND, facecolor='#334155', edgecolor='#475569')
         self.map_ax.add_feature(cfeature.BORDERS, linestyle=':', edgecolor='#64748b')
         self.map_ax.set_global()
 
-        # Embed into Tkinter
+        self.map_annot = self.map_ax.annotate("", xy=(0, 0), xytext=(10, 10), textcoords="offset points",
+                                              bbox=dict(boxstyle="round,pad=0.4", fc="#f8fafc", ec="#94a3b8", lw=1),
+                                              color="#0f172a", fontsize=10, weight="bold", zorder=10)
+        self.map_annot.set_visible(False)
+
         self.canvas_widget = FigureCanvasTkAgg(self.map_fig, master=map_win)
         self.canvas_widget.get_tk_widget().pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
+        self.canvas_widget.mpl_connect("motion_notify_event", self.on_map_hover)
+
+        # Scroll Wheel Zoom Support for Map
+        def on_map_scroll(event):
+            if event.inaxes != self.map_ax:
+                return
+            extent = self.map_ax.get_extent(crs=ccrs.PlateCarree())
+            lon_min, lon_max, lat_min, lat_max = extent
+            factor = 0.9 if (event.num == 4 or event.delta > 0) else 1.1
+            lon_center = (lon_min + lon_max) / 2
+            lat_center = (lat_min + lat_max) / 2
+            lon_span = (lon_max - lon_min) * factor
+            lat_span = (lat_max - lat_min) * factor
+            new_extent = [
+                lon_center - lon_span / 2,
+                lon_center + lon_span / 2,
+                lat_center - lat_span / 2,
+                lat_center + lat_span / 2
+            ]
+            try:
+                self.map_ax.set_extent(new_extent, crs=ccrs.PlateCarree())
+                self.canvas_widget.draw_idle()
+            except Exception:
+                pass
+
+        self.canvas_widget.mpl_connect("scroll_event", on_map_scroll)
+
         self.drawn_artists = []
 
-        # Determine Timeline Bounds
         all_years = []
         for node in self.tree.values():
             for loc in node.locations:
                 all_years.append(loc['year'])
+            if node.birth_year and node.birth_year.isdigit():
+                all_years.append(int(node.birth_year))
+            if node.death_year and node.death_year.isdigit():
+                all_years.append(int(node.death_year))
 
         if not all_years:
             self.map_year_label.config(text="----")
@@ -314,7 +349,6 @@ class AncestryApp:
 
         self.update_map_visuals()
 
-        # Handle window closure
         def on_closing():
             self.map_playing = False
             plt.close(self.map_fig)
@@ -322,88 +356,148 @@ class AncestryApp:
 
         map_win.protocol("WM_DELETE_WINDOW", on_closing)
 
+    def on_map_hover(self, event):
+        if event.inaxes != self.map_ax:
+            if self.map_annot.get_visible():
+                self.map_annot.set_visible(False)
+                self.canvas_widget.draw_idle()
+            return
+
+        point_groups = {}
+        for lon, lat, name, is_active in self.scatter_points:
+            if not is_active:
+                continue  # Only include living/active people in hover names
+            r_pt = ccrs.Robinson().transform_point(lon, lat, ccrs.Geodetic())
+            xy = self.map_ax.transData.transform(r_pt)
+            dist = (xy[0] - event.x) ** 2 + (xy[1] - event.y) ** 2
+            if dist < 400:
+                key = (round(lon, 4), round(lat, 4))
+                if key not in point_groups:
+                    point_groups[key] = {'names': [], 'r_pt': r_pt, 'min_dist': dist}
+                if name not in point_groups[key]['names']:
+                    point_groups[key]['names'].append(name)
+                if dist < point_groups[key]['min_dist']:
+                    point_groups[key]['min_dist'] = dist
+
+        best_group = None
+        lowest_dist = float('inf')
+        for key, group in point_groups.items():
+            if group['min_dist'] < lowest_dist:
+                lowest_dist = group['min_dist']
+                best_group = group
+
+        if best_group:
+            names_str = "\n".join(best_group['names'])
+            r_pt = best_group['r_pt']
+            if not self.map_annot.get_visible() or self.map_annot.get_text() != names_str:
+                self.map_annot.xy = (r_pt[0], r_pt[1])
+                self.map_annot.set_text(names_str)
+                self.map_annot.set_visible(True)
+                self.canvas_widget.draw_idle()
+        else:
+            if self.map_annot.get_visible():
+                self.map_annot.set_visible(False)
+                self.canvas_widget.draw_idle()
+
     def update_map_visuals(self, t=1.0):
         if self.max_year > 0:
             self.map_year_label.config(text=f"{self.current_map_year}")
 
-        # Clear previously drawn dots/lines
         for artist in self.drawn_artists:
             try:
                 artist.remove()
             except ValueError:
                 pass
         self.drawn_artists.clear()
+        self.scatter_points.clear()
 
         active_names = []
 
         for name, node in self.tree.items():
-            if not node.locations: continue
+            node_years = [loc['year'] for loc in node.locations]
+            if node.birth_year and node.birth_year.isdigit():
+                node_years.append(int(node.birth_year))
+            if node.death_year and node.death_year.isdigit():
+                node_years.append(int(node.death_year))
 
-            sorted_locs = sorted(node.locations, key=lambda x: x['year'])
-            valid_locs = [loc for loc in sorted_locs if loc['year'] <= self.current_map_year]
+            if not node_years:
+                continue
 
-            if not valid_locs: continue
+            first_year = min(node_years)
+            if node.is_living:
+                last_year = max(self.max_year, first_year)
+            elif node.death_year and node.death_year.isdigit():
+                last_year = int(node.death_year)
+            elif node.locations:
+                last_year = sorted(node.locations, key=lambda x: x['year'])[-1]['year']
+            elif node.birth_year and node.birth_year.isdigit():
+                last_year = int(node.birth_year) + 80
+            else:
+                last_year = first_year
 
-            node_max_year = sorted_locs[-1]['year']
-            is_active = self.current_map_year <= node_max_year
+            if first_year <= self.current_map_year <= last_year:
+                active_names.append(node.display_name)
 
-            # Determine position (interpolating if they are currently traveling)
+            valid_locs = [loc for loc in sorted(node.locations, key=lambda x: x['year']) if loc.get('lat') is not None and loc.get('lon') is not None and loc['year'] <= self.current_map_year]
+            if not valid_locs:
+                continue
+
+            is_active = self.current_map_year <= last_year
             is_moving_now = (self.current_map_year == valid_locs[-1]['year']) and (len(valid_locs) > 1) and (t < 1.0)
 
             if is_moving_now:
                 prev_loc = valid_locs[-2]
                 target_loc = valid_locs[-1]
 
-                # Simple linear interpolation for the map projection
                 curr_lat = prev_loc['lat'] + (target_loc['lat'] - prev_loc['lat']) * t
                 curr_lon = prev_loc['lon'] + (target_loc['lon'] - prev_loc['lon']) * t
 
-                trail_lats = [loc['lat'] for loc in valid_locs[:-1]] + [curr_lat]
-                trail_lons = [loc['lon'] for loc in valid_locs[:-1]] + [curr_lon]
-                dot_lats = [loc['lat'] for loc in valid_locs[:-1]]
-                dot_lons = [loc['lon'] for loc in valid_locs[:-1]]
+                past_lats = [loc['lat'] for loc in valid_locs[:-1]]
+                past_lons = [loc['lon'] for loc in valid_locs[:-1]]
+                moving_lats = [prev_loc['lat'], curr_lat]
+                moving_lons = [prev_loc['lon'], curr_lon]
             else:
                 curr_lat = valid_locs[-1]['lat']
                 curr_lon = valid_locs[-1]['lon']
 
-                trail_lats = [loc['lat'] for loc in valid_locs]
-                trail_lons = [loc['lon'] for loc in valid_locs]
-                dot_lats = trail_lats[:-1]
-                dot_lons = trail_lons[:-1]
+                past_lats = [loc['lat'] for loc in valid_locs]
+                past_lons = [loc['lon'] for loc in valid_locs]
+                moving_lats = []
+                moving_lons = []
 
-            # Draw Historical Trails
-            if len(trail_lats) > 1:
-                trail_alpha = 0.6 if is_active else 0.15
-                trail, = self.map_ax.plot(trail_lons, trail_lats, color='#047857', linewidth=2,
-                                          linestyle='--', transform=ccrs.Geodetic(), alpha=trail_alpha)
+            # Visited past location dots are faded like dead people
+            if len(valid_locs) > 1:
+                visited_lats = [loc['lat'] for loc in valid_locs[:-1]]
+                visited_lons = [loc['lon'] for loc in valid_locs[:-1]]
+                if visited_lats:
+                    faded_dots = self.map_ax.scatter(visited_lons, visited_lats, color='#475569',
+                                                     edgecolor='#94a3b8', s=30, transform=ccrs.Geodetic(),
+                                                     zorder=3, alpha=0.6)
+                    self.drawn_artists.append(faded_dots)
 
-                if dot_lats:
-                    faint_dots = self.map_ax.scatter(dot_lons, dot_lats, color='#022c22',
-                                                     edgecolor='#047857', s=20, transform=ccrs.Geodetic(),
-                                                     zorder=3, alpha=trail_alpha)
-                    self.drawn_artists.extend([trail, faint_dots])
-                else:
-                    self.drawn_artists.append(trail)
+            # Historical trail lines (faded)
+            if len(past_lats) > 1:
+                trail, = self.map_ax.plot(past_lons, past_lats, color='#475569', linewidth=1.5,
+                                          linestyle='--', transform=ccrs.Geodetic(), alpha=0.4)
+                self.drawn_artists.append(trail)
 
-            # Current location configuration
+            # Active moving line that follows as they move to that place, fading once move occurs
+            if is_moving_now and len(moving_lats) > 1:
+                moving_line, = self.map_ax.plot(moving_lons, moving_lats, color='#10b981', linewidth=2.5,
+                                                linestyle='-', transform=ccrs.Geodetic(), alpha=0.9, zorder=5)
+                self.drawn_artists.append(moving_line)
+
             dot_color = '#10b981' if is_active else '#475569'
-            dot_edge = '#ffffff' if is_active else '#1e293b'
-            dot_alpha = 1.0 if is_active else 0.3
-            dot_size = 60 if is_active else 30
+            dot_edge = '#ffffff' if is_active else '#94a3b8'
+            dot_alpha = 1.0 if is_active else 0.6
+            dot_size = 60 if is_active else 40
 
             main_dot = self.map_ax.scatter([curr_lon], [curr_lat], color=dot_color,
                                            edgecolor=dot_edge, s=dot_size, transform=ccrs.Geodetic(),
                                            zorder=4, alpha=dot_alpha)
 
-            text_color = '#e2e8f0' if is_active else '#475569'
-            text_lbl = self.map_ax.text(curr_lon + 3, curr_lat + 3, node.display_name,
-                                        color=text_color, fontsize=9, weight='bold',
-                                        transform=ccrs.Geodetic(), zorder=5, alpha=dot_alpha)
-
-            self.drawn_artists.extend([main_dot, text_lbl])
-
-            if is_active:
-                active_names.append(node.display_name)
+            self.scatter_points.append((curr_lon, curr_lat, node.display_name, is_active))
+            self.drawn_artists.append(main_dot)
 
         self.canvas_widget.draw_idle()
 
@@ -442,21 +536,18 @@ class AncestryApp:
             self.update_map_visuals()
             return
 
-        # Check if anyone arrived at a new location this specific year
         needs_movement = False
         for node in self.tree.values():
             if not node.locations: continue
 
             sorted_locs = sorted(node.locations, key=lambda x: x['year'])
-            valid_locs = [loc for loc in sorted_locs if loc['year'] <= self.current_map_year]
+            valid_locs = [loc for loc in sorted_locs if loc.get('lat') is not None and loc.get('lon') is not None and loc['year'] <= self.current_map_year]
 
-            # If their current location is this exact year, and they have a previous point to travel from
             if valid_locs and valid_locs[-1]['year'] == self.current_map_year and len(valid_locs) > 1:
                 needs_movement = True
                 break
 
         if needs_movement:
-            # Pause time and trigger interpolation movement phase
             self.is_moving = True
             self.move_t = 0.0
             self._movement_loop()
@@ -467,14 +558,12 @@ class AncestryApp:
     def _movement_loop(self):
         if not self.map_playing: return
 
-        # 20 steps for smooth animation
         self.move_t += 0.05
 
         if self.move_t >= 1.0:
             self.move_t = 1.0
             self.update_map_visuals(t=1.0)
             self.is_moving = False
-            # Resume normal timeline progress
             self.root.after(self.timeline_speed, self._map_loop)
         else:
             self.update_map_visuals(t=self.move_t)
@@ -493,8 +582,6 @@ class AncestryApp:
 
     def isolate_tree(self, person_name):
         self.isolated_root = person_name
-        if self.active_breakdown_window:
-            self.active_breakdown_window.destroy()
         self.reset_view_to_root()
 
     def calculate_inheritance(self):
@@ -513,17 +600,14 @@ class AncestryApp:
             self._compute_node_heritage(root_name, visited=set())
 
     def _compute_node_heritage(self, name, visited):
-        if name in visited or name not in self.tree:
-            return
+        if name in visited or name not in self.tree: return
         visited.add(name)
 
         node = self.tree[name]
 
         if node.father or node.mother:
-            if node.father:
-                self._compute_node_heritage(node.father, visited)
-            if node.mother:
-                self._compute_node_heritage(node.mother, visited)
+            if node.father: self._compute_node_heritage(node.father, visited)
+            if node.mother: self._compute_node_heritage(node.mother, visited)
 
             has_father = node.father and node.father in self.tree
             has_mother = node.mother and node.mother in self.tree
@@ -562,24 +646,17 @@ class AncestryApp:
                 self._compute_node_heritage(child_name, visited.copy())
 
     def _count_leaves(self, name, memo):
-        if name not in self.tree:
-            return 1
-        if name in memo:
-            return memo[name]
-
+        if name not in self.tree: return 1
+        if name in memo: return memo[name]
         node = self.tree[name]
-        if not node.father and not node.mother:
-            return 1
-
+        if not node.father and not node.mother: return 1
         f_leaves = self._count_leaves(node.father, memo) if node.father else 0
         m_leaves = self._count_leaves(node.mother, memo) if node.mother else 0
-
         memo[name] = max(1, f_leaves + m_leaves)
         return memo[name]
 
     def _get_max_depth(self, name, visited):
-        if name in visited or name not in self.tree:
-            return 0
+        if name in visited or name not in self.tree: return 0
         visited.add(name)
         node = self.tree[name]
         f_depth = self._get_max_depth(node.father, visited) if node.father else 0
@@ -588,8 +665,7 @@ class AncestryApp:
 
     def calculate_positions(self):
         positions = {}
-        if not self.tree:
-            return positions
+        if not self.tree: return positions
 
         if self.isolated_root and self.isolated_root in self.tree:
             roots = [self.isolated_root]
@@ -653,8 +729,7 @@ class AncestryApp:
         self.calculate_inheritance()
         self.positions = self.calculate_positions()
 
-        if not self.positions:
-            return
+        if not self.positions: return
 
         if self.isolated_root and self.isolated_root in self.tree:
             roots = [self.isolated_root]
@@ -697,8 +772,7 @@ class AncestryApp:
         self.canvas.create_oval(x - radius, y - radius, x + radius, y + radius, fill=base_color, outline="#cbd5e1",
                                 width=1)
 
-        if len(active_eth) == 1:
-            return
+        if len(active_eth) == 1: return
 
         total = sum(active_eth.values())
         current_angle = 0.0
@@ -707,7 +781,6 @@ class AncestryApp:
             extent = (value / total) * 360.0
             if eth != largest_eth:
                 color = '#e2e8f0' if eth == "Unknown" else self.ethnicity_colors.get(eth, '#e2e8f0')
-
                 points = [x, y]
                 steps = max(4, int(extent / 3))
                 for i in range(steps + 1):
@@ -717,7 +790,6 @@ class AncestryApp:
                     py = y - radius * math.sin(rad)
                     points.append(px)
                     points.append(py)
-
                 self.canvas.create_polygon(points, fill=color, outline="#ffffff", width=0.5)
             current_angle += extent
 
@@ -771,39 +843,73 @@ class AncestryApp:
 
             self.draw_pie_chart(x, y, pie_radius, node.computed_ethnicities)
             self.canvas.create_oval(x - pie_radius, y - pie_radius, x + pie_radius, y + pie_radius, fill="", outline="",
-                                    tags=(chart_tag, "interactive"))
+                                    tags=(chart_tag, "interactive", "pie"))
 
             if self.show_decorations:
-                formatted_name = self.get_formatted_split_name(node.display_name)
+                text_y = y + pie_radius + 14.0
+                node_items = []
 
+                # Line 1: Name (Bold)
+                formatted_name = self.get_formatted_split_name(node.display_name)
+                lbl_name = self.canvas.create_text(x, text_y, text=formatted_name, font=("Arial", 13, "bold"),
+                                                   fill="#0f172a", justify=tk.CENTER, tags=("node_name",))
+                node_items.append(lbl_name)
+
+                bbox_name = self.canvas.bbox(lbl_name)
+                current_y = bbox_name[3] + 4 if bbox_name else text_y + 20
+
+                # Line 2: Signifiers (Italic, comma separated)
+                signifiers_list = getattr(node, 'signifiers', [])
+                if signifiers_list:
+                    sig_text = ", ".join(signifiers_list)
+                    lbl_sig = self.canvas.create_text(x, current_y, text=sig_text, font=("Arial", 11, "italic"),
+                                                      fill="#475569", justify=tk.CENTER, tags=("node_sig",))
+                    node_items.append(lbl_sig)
+                    bbox_sig = self.canvas.bbox(lbl_sig)
+                    current_y = bbox_sig[3] + 4 if bbox_sig else current_y + 16
+
+                # Line 3: Dates / Status
                 if node.birth_year or node.death_year or node.is_living:
                     b_str = node.birth_year if node.birth_year else "?"
                     d_str = "Present" if node.is_living else (node.death_year if node.death_year else "?")
-                    formatted_name += f"\n({b_str} - {d_str})"
+                    years_text = f"({b_str} - {d_str})"
+                    lbl_years = self.canvas.create_text(x, current_y, text=years_text, font=("Arial", 10),
+                                                        fill="#64748b", justify=tk.CENTER, tags=("node_years",))
+                    node_items.append(lbl_years)
 
-                text_y = y + pie_radius + 22.0
-                lbl = self.canvas.create_text(x, text_y, text=formatted_name, font=("Arial", 13, "bold"),
-                                              fill="#0f172a", justify=tk.CENTER, tags=("node_text",))
-
-                bbox = self.canvas.bbox(lbl)
-                bg_rect = self.canvas.create_rectangle(bbox[0] - 5, bbox[1] - 5, bbox[2] + 5, bbox[3] + 5,
-                                                       fill="#ffffff", outline="#cbd5e1", width=1)
-                self.canvas.tag_lower(bg_rect, lbl)
+                # Background card bounding box
+                if node_items:
+                    x1, y1, x2, y2 = self.canvas.bbox(node_items[0])
+                    for item in node_items[1:]:
+                        bx1, by1, bx2, by2 = self.canvas.bbox(item)
+                        x1 = min(x1, bx1)
+                        y1 = min(y1, by1)
+                        x2 = max(x2, bx2)
+                        y2 = max(y2, by2)
+                    bg_rect = self.canvas.create_rectangle(x1 - 6, y1 - 4, x2 + 6, y2 + 4, fill="#ffffff",
+                                                           outline="#cbd5e1", width=1)
+                    self.canvas.tag_lower(bg_rect, node_items[0])
 
                 plus_tag = f"plus_click:{name}"
                 plus_y = y - pie_radius - 15.0
 
                 self.canvas.create_rectangle(x - 8, plus_y - 8, x + 8, plus_y + 8, fill="#10b981", outline="#047857",
-                                             tags=(plus_tag, "interactive"))
+                                             tags=(plus_tag, "interactive", "plus"))
                 self.canvas.create_text(x, plus_y, text="+", font=("Arial", 13, "bold"), fill="white",
                                         tags=(plus_tag, "interactive", "plus_text"))
 
         self.canvas.scale("all", 0, 0, self.canvas_scale, self.canvas_scale)
         self.canvas.move("all", self.pan_x, self.pan_y)
 
-        new_font_size = max(1, int(13 * self.canvas_scale))
-        self.canvas.itemconfig("node_text", font=("Arial", new_font_size, "bold"))
-        self.canvas.itemconfig("plus_text", font=("Arial", new_font_size, "bold"))
+        name_size = max(1, int(13 * self.canvas_scale))
+        sig_size = max(1, int(11 * self.canvas_scale))
+        years_size = max(1, int(10 * self.canvas_scale))
+        plus_size = max(1, int(13 * self.canvas_scale))
+
+        self.canvas.itemconfig("node_name", font=("Arial", name_size, "bold"))
+        self.canvas.itemconfig("node_sig", font=("Arial", sig_size, "italic"))
+        self.canvas.itemconfig("node_years", font=("Arial", years_size, ""))
+        self.canvas.itemconfig("plus_text", font=("Arial", plus_size, "bold"))
 
     def on_press(self, event):
         canvas_x = self.canvas.canvasx(event.x)
@@ -814,10 +920,10 @@ class AncestryApp:
             tags = self.canvas.gettags(clicked_items[-1])
             for tag in tags:
                 if tag.startswith("plus_click:"):
-                    self.open_parent_dialog(tag.split("plus_click:")[1])
+                    self.open_parent_dialog(tag.split(":")[1])
                     return
                 elif tag.startswith("pie_click:"):
-                    self.display_ethnic_breakdown(tag.split("pie_click:")[1])
+                    self.open_profile_dialog(tag.split(":")[1])
                     return
 
         self.drag_start_x = event.x
@@ -841,148 +947,249 @@ class AncestryApp:
         self.canvas_scale *= factor
         self.canvas.scale("all", cx, cy, factor, factor)
 
-        new_font_size = max(1, int(13 * self.canvas_scale))
-        self.canvas.itemconfig("node_text", font=("Arial", new_font_size, "bold"))
-        self.canvas.itemconfig("plus_text", font=("Arial", new_font_size, "bold"))
+        name_size = max(1, int(13 * self.canvas_scale))
+        sig_size = max(1, int(11 * self.canvas_scale))
+        years_size = max(1, int(10 * self.canvas_scale))
+        plus_size = max(1, int(13 * self.canvas_scale))
 
-    def display_ethnic_breakdown(self, person_name):
-        if self.active_breakdown_window:
-            try:
-                self.active_breakdown_window.destroy()
-            except tk.TclError:
-                pass
-
-        node = self.tree[person_name]
-        self.active_breakdown_window = tk.Toplevel(self.root)
-        bw = self.active_breakdown_window
-        bw.title(f"Composition Breakdown: {node.display_name}")
-        bw.geometry("380x520")
-        bw.configure(bg="#f8fafc")
-        bw.transient(self.root)
-
-        tk.Label(bw, text=node.display_name, font=("Arial", 16, "bold"), bg="#f8fafc").pack(pady=(20, 5))
-        tk.Label(bw, text="Inherited Ancestry Composition", font=("Arial", 10, "italic"), fg="#64748b",
-                 bg="#f8fafc").pack(pady=(0, 15))
-
-        frame_list = tk.Frame(bw, bg="white", bd=1, relief=tk.SOLID, padx=15, pady=15)
-        frame_list.pack(fill=tk.BOTH, expand=True, padx=25, pady=(0, 15))
-
-        data = node.computed_ethnicities or {"Unknown": 100.0}
-        valid_items = [(k, v) for k, v in data.items() if k != "Unknown"]
-        valid_items.sort(key=lambda item: item[1], reverse=True)
-        if "Unknown" in data: valid_items.append(("Unknown", data["Unknown"]))
-
-        for eth, pct in valid_items:
-            if pct <= 0: continue
-            row = tk.Frame(frame_list, bg="white", pady=6)
-            row.pack(fill=tk.X)
-            color_hex = self.ethnicity_colors.get(eth, "#cbd5e1")
-            tk.Frame(row, width=14, height=14, bg=color_hex, bd=1, relief=tk.SOLID).pack(side=tk.LEFT, padx=(0, 10))
-            tk.Label(row, text=eth, font=("Arial", 11, "bold" if eth != "Unknown" else "normal"), bg="white").pack(
-                side=tk.LEFT)
-            tk.Label(row, text=f"{pct:.2f}%", font=("Arial", 11, "bold"), bg="white").pack(side=tk.RIGHT)
-
-        tk.Button(bw, text="Isolate Ancestors", command=lambda: self.isolate_tree(person_name), bg="#8b5cf6",
-                  fg="white", font=("Arial", 10, "bold"), height=2).pack(fill=tk.X, padx=25, pady=(0, 20))
+        self.canvas.itemconfig("node_name", font=("Arial", name_size, "bold"))
+        self.canvas.itemconfig("node_sig", font=("Arial", sig_size, "italic"))
+        self.canvas.itemconfig("node_years", font=("Arial", years_size, ""))
+        self.canvas.itemconfig("plus_text", font=("Arial", plus_size, "bold"))
 
     # ---------------------------------------------------------
-    # TABS: PARENT DIALOG
+    # PARENT & PROFILE DIALOGS
     # ---------------------------------------------------------
     def open_parent_dialog(self, person_name):
         dialog = tk.Toplevel(self.root)
-        dialog.title(f"Manage Profile: {person_name}")
-        dialog.geometry("650x700")
+        dialog.title(f"Link Parents: {person_name}")
+        dialog.geometry("450x350")
         dialog.transient(self.root)
         dialog.grab_set()
 
         node = self.tree[person_name]
 
-        tk.Label(dialog, text=f"Editing Family Network for:", font=("Arial", 10)).pack(pady=(12, 2))
+        tk.Label(dialog, text="Link Family Network For:", font=("Arial", 10)).pack(pady=(12, 2))
         tk.Label(dialog, text=node.display_name, font=("Arial", 14, "bold"), fg="#047857").pack(pady=(0, 12))
 
-        notebook = ttk.Notebook(dialog)
-        notebook.pack(fill=tk.BOTH, expand=True, padx=15, pady=5)
+        def create_parent_block(title_str, node_attr):
+            group = tk.LabelFrame(dialog, text=title_str, font=("Arial", 10, "bold"), padx=10, pady=10)
+            group.pack(fill=tk.X, padx=20, pady=10)
 
-        tab_parents = tk.Frame(notebook, bg="#f8fafc")
-        tab_genetics = tk.Frame(notebook, bg="#f8fafc")
-        tab_timeline = tk.Frame(notebook, bg="#f8fafc")
-
-        notebook.add(tab_parents, text="Family Links")
-        notebook.add(tab_genetics, text="Genetics Base")
-        notebook.add(tab_timeline, text="Timeline & Map")
-
-        # --- TAB 1: PARENTS ---
-        def create_parent_block(parent_frame, title_str, node_attr, is_father):
-            group = tk.LabelFrame(parent_frame, text=title_str, font=("Arial", 10, "bold"), padx=10, pady=10,
-                                  bg="#f8fafc")
-            group.pack(fill=tk.X, padx=15, pady=(15, 10))
-
-            r1 = tk.Frame(group, bg="#f8fafc")
-            r1.pack(fill=tk.X)
-            tk.Label(r1, text="Full Name:", font=("Arial", 9, "bold"), width=10, anchor=tk.W, bg="#f8fafc").pack(
-                side=tk.LEFT)
-            name_entry = tk.Entry(r1, font=("Arial", 10), width=24)
-            name_entry.pack(side=tk.LEFT, padx=(0, 15))
-
-            tk.Label(r1, text="Ethnicity:", font=("Arial", 9, "bold"), anchor=tk.W, bg="#f8fafc").pack(side=tk.LEFT,
-                                                                                                       padx=(0, 5))
-            combo = ttk.Combobox(r1, values=["None"] + self.ethnicity_options, width=14, state="readonly")
-            combo.pack(side=tk.LEFT)
-
-            r2 = tk.Frame(group, bg="#f8fafc")
-            r2.pack(fill=tk.X, pady=(10, 0))
-            tk.Label(r2, text="Birth Year:", font=("Arial", 9, "bold"), width=10, anchor=tk.W, bg="#f8fafc").pack(
-                side=tk.LEFT)
-            birth_entry = tk.Entry(r2, font=("Arial", 10), width=10)
-            birth_entry.pack(side=tk.LEFT, padx=(0, 15))
-
-            tk.Label(r2, text="Death Year:", font=("Arial", 9, "bold"), anchor=tk.W, bg="#f8fafc").pack(side=tk.LEFT,
-                                                                                                        padx=(0, 5))
-            death_entry = tk.Entry(r2, font=("Arial", 10), width=10)
-            death_entry.pack(side=tk.LEFT, padx=(0, 10))
-
-            living_var = tk.BooleanVar()
-
-            def toggle_death():
-                if living_var.get():
-                    death_entry.delete(0, tk.END)
-                    death_entry.config(state=tk.DISABLED)
-                else:
-                    death_entry.config(state=tk.NORMAL)
-
-            tk.Checkbutton(r2, text="Currently Living", variable=living_var, command=toggle_death, bg="#f8fafc").pack(
-                side=tk.LEFT)
+            tk.Label(group, text="Full Name:", font=("Arial", 9, "bold")).pack(side=tk.LEFT)
+            name_entry = tk.Entry(group, font=("Arial", 10), width=28)
+            name_entry.pack(side=tk.LEFT, padx=10)
 
             parent_n = self.tree.get(node_attr) if node_attr else None
             if parent_n:
                 name_entry.insert(0, parent_n.display_name)
-                birth_entry.insert(0, parent_n.birth_year)
-                if parent_n.is_living:
-                    living_var.set(True)
-                    toggle_death()
-                else:
-                    death_entry.insert(0, parent_n.death_year)
-                init_eth = parent_n.base_ethnicities[0] if parent_n.base_ethnicities else "None"
             else:
                 name_entry.insert(0, node_attr or "")
-                init_eth = "None"
 
-            if init_eth not in self.ethnicity_options: init_eth = "None"
-            combo.set(init_eth)
-            return name_entry, birth_entry, death_entry, living_var, combo
+            return name_entry
 
-        f_entries = create_parent_block(tab_parents, " Father's Profile ", node.father, True)
-        m_entries = create_parent_block(tab_parents, " Mother's Profile ", node.mother, False)
+        f_entry = create_parent_block(" Father ", node.father)
+        m_entry = create_parent_block(" Mother ", node.mother)
 
-        # --- TAB 2: GENETICS ---
-        c_frame = tk.Frame(tab_genetics, bg="#f8fafc")
-        c_frame.pack(fill=tk.X, padx=15, pady=(15, 10))
-        tk.Label(c_frame, text="Add New Ethnicity:", font=("Arial", 10, "bold"), bg="#f8fafc").pack(side=tk.LEFT)
+        def save_parents():
+            old_f, old_m = node.father, node.mother
+            new_f, new_m = f_entry.get().strip(), m_entry.get().strip()
+
+            def process_parent(old_id, new_id, is_father):
+                if not new_id:
+                    if is_father:
+                        node.father = None
+                    else:
+                        node.mother = None
+                    return
+                if old_id != new_id:
+                    if new_id not in self.tree:
+                        new_node = AncestorNode(name=new_id, display_name=new_id)
+                        new_node.signifiers = []
+                        self.tree[new_id] = new_node
+                    if is_father:
+                        node.father = new_id
+                    else:
+                        node.mother = new_id
+
+            process_parent(old_f, new_f, True)
+            process_parent(old_m, new_m, False)
+            dialog.destroy()
+            self.refresh_plot()
+
+        tk.Button(dialog, text="Link Ancestors", command=save_parents, bg="#3b82f6", fg="white",
+                  font=("Arial", 10, "bold")).pack(pady=15)
+
+    def open_profile_dialog(self, person_name):
+        self.calculate_inheritance()
+        dialog = tk.Toplevel(self.root)
+        dialog.title(f"Manage Profile: {person_name}")
+        dialog.geometry("750x780")
+        dialog.transient(self.root)
+        dialog.grab_set()
+
+        node = self.tree[person_name]
+        if not hasattr(node, 'signifiers') or node.signifiers is None:
+            node.signifiers = []
+
+        header_text = node.display_name
+        if node.signifiers:
+            header_text += f" ({', '.join(node.signifiers)})"
+
+        tk.Label(dialog, text=header_text, font=("Arial", 16, "bold"), fg="#047857", bg="#f8fafc").pack(fill=tk.X,
+                                                                                                        pady=(15, 10))
+
+        notebook = ttk.Notebook(dialog)
+        notebook.pack(fill=tk.BOTH, expand=True, padx=15, pady=5)
+
+        tab_bio = tk.Frame(notebook, bg="#f8fafc")
+        tab_genetics = tk.Frame(notebook, bg="#f8fafc")
+        tab_timeline = tk.Frame(notebook, bg="#f8fafc")
+
+        notebook.add(tab_bio, text="Identity & Bio")
+        notebook.add(tab_genetics, text="Genetics Base & Breakdown")
+        notebook.add(tab_timeline, text="Timeline Map Data")
+
+        # --- TAB 1: IDENTITY & BIO ---
+        bio_grid = tk.Frame(tab_bio, bg="#f8fafc")
+        bio_grid.pack(fill=tk.BOTH, expand=True, padx=20, pady=20)
+
+        form_frame = tk.Frame(bio_grid, bg="#f8fafc")
+        form_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        tk.Label(form_frame, text="Full Name:", font=("Arial", 10, "bold"), bg="#f8fafc").grid(row=0, column=0,
+                                                                                               sticky=tk.W, pady=6)
+        bio_name = tk.Entry(form_frame, width=28, font=("Arial", 10))
+        bio_name.grid(row=0, column=1, sticky=tk.W, pady=6)
+        bio_name.insert(0, node.display_name)
+
+        tk.Label(form_frame, text="Birth Year:", font=("Arial", 10, "bold"), bg="#f8fafc").grid(row=1, column=0,
+                                                                                                sticky=tk.W, pady=6)
+        bio_b_year = tk.Entry(form_frame, width=15, font=("Arial", 10))
+        bio_b_year.grid(row=1, column=1, sticky=tk.W, pady=6)
+        bio_b_year.insert(0, node.birth_year)
+
+        tk.Label(form_frame, text="Birth Location:", font=("Arial", 10, "bold"), bg="#f8fafc").grid(row=2, column=0,
+                                                                                                    sticky=tk.W, pady=6)
+        bio_b_loc = tk.Entry(form_frame, width=28, font=("Arial", 10))
+        bio_b_loc.grid(row=2, column=1, sticky=tk.W, pady=6)
+        bio_b_loc.insert(0, getattr(node, 'birth_location', ''))
+
+        tk.Label(form_frame, text="Death Year:", font=("Arial", 10, "bold"), bg="#f8fafc").grid(row=3, column=0,
+                                                                                                sticky=tk.W, pady=6)
+        d_frame = tk.Frame(form_frame, bg="#f8fafc")
+        d_frame.grid(row=3, column=1, sticky=tk.W, pady=6)
+
+        bio_d_year = tk.Entry(d_frame, width=12, font=("Arial", 10))
+        bio_d_year.pack(side=tk.LEFT)
+        bio_d_year.insert(0, node.death_year)
+
+        bio_living = tk.BooleanVar(value=node.is_living)
+
+        def toggle_d_year():
+            if bio_living.get():
+                bio_d_year.delete(0, tk.END)
+                bio_d_year.config(state=tk.DISABLED)
+            else:
+                bio_d_year.config(state=tk.NORMAL)
+
+        tk.Checkbutton(d_frame, text="Living", variable=bio_living, command=toggle_d_year, bg="#f8fafc").pack(
+            side=tk.LEFT, padx=5)
+        toggle_d_year()
+
+        tk.Label(form_frame, text="Death Location:", font=("Arial", 10, "bold"), bg="#f8fafc").grid(row=4, column=0,
+                                                                                                    sticky=tk.W, pady=6)
+        bio_d_loc = tk.Entry(form_frame, width=28, font=("Arial", 10))
+        bio_d_loc.grid(row=4, column=1, sticky=tk.W, pady=6)
+        bio_d_loc.insert(0, getattr(node, 'death_location', ''))
+
+        # Signifiers Panel (1 word max each)
+        sig_frame = tk.LabelFrame(bio_grid, text=" Signifiers (1 word max) ", font=("Arial", 10, "bold"), padx=10,
+                                  pady=10, bg="#f8fafc")
+        sig_frame.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True, padx=(15, 0))
+
+        sig_listbox = tk.Listbox(sig_frame, font=("Arial", 10), height=7)
+        sig_listbox.pack(fill=tk.BOTH, expand=True, pady=(0, 6))
+
+        def refresh_sig_list():
+            sig_listbox.delete(0, tk.END)
+            for s in node.signifiers:
+                sig_listbox.insert(tk.END, s)
+
+        refresh_sig_list()
+
+        sig_input_frame = tk.Frame(sig_frame, bg="#f8fafc")
+        sig_input_frame.pack(fill=tk.X, pady=(0, 5))
+
+        sig_entry = tk.Entry(sig_input_frame, font=("Arial", 10), width=16)
+        sig_entry.pack(side=tk.LEFT, padx=(0, 5))
+
+        def add_signifier():
+            val = sig_entry.get().strip()
+            if not val:
+                return
+            if len(val.split()) > 1:
+                messagebox.showwarning("Validation Error", "A signifier can be at most one word.")
+                return
+            if val not in node.signifiers:
+                node.signifiers.append(val)
+                refresh_sig_list()
+                sig_entry.delete(0, tk.END)
+
+        tk.Button(sig_input_frame, text="Add", command=add_signifier, bg="#3b82f6", fg="white",
+                  font=("Arial", 9, "bold")).pack(side=tk.LEFT)
+
+        def remove_signifier():
+            sel = sig_listbox.curselection()
+            if sel:
+                del node.signifiers[sel[0]]
+                refresh_sig_list()
+
+        tk.Button(sig_frame, text="Remove Selected", command=remove_signifier, bg="#ef4444", fg="white",
+                  font=("Arial", 9)).pack(anchor=tk.E)
+
+        # --- TAB 2: GENETICS & BREAKDOWN ---
+        genetics_main = tk.Frame(tab_genetics, bg="#f8fafc")
+        genetics_main.pack(fill=tk.BOTH, expand=True, padx=15, pady=15)
+
+        computed_frame = tk.LabelFrame(genetics_main, text=" Computed Inherited Percentages ", font=("Arial", 10, "bold"), padx=10, pady=10, bg="#f8fafc")
+        computed_frame.pack(fill=tk.X, pady=(0, 15))
+
+        computed_list_frame = tk.Frame(computed_frame, bg="#f8fafc")
+        computed_list_frame.pack(fill=tk.X, expand=True)
+
+        def refresh_computed_breakdown():
+            for widget in computed_list_frame.winfo_children():
+                widget.destroy()
+
+            active_eth = {k: v for k, v in node.computed_ethnicities.items() if v > 0}
+            if not active_eth:
+                tk.Label(computed_list_frame, text="No computed ethnicity data available.", font=("Arial", 9, "italic"), bg="#f8fafc", fg="#64748b").pack(anchor=tk.W)
+                return
+
+            sorted_eth = sorted(active_eth.items(), key=lambda item: item[1], reverse=True)
+            for eth, pct in sorted_eth:
+                row = tk.Frame(computed_list_frame, bg="#f8fafc")
+                row.pack(fill=tk.X, pady=2)
+
+                clr = self.ethnicity_colors.get(eth, "#cbd5e1") if eth != "Unknown" else "#cbd5e1"
+                tk.Label(row, bg=clr, width=2, height=1, relief=tk.SOLID, bd=1).pack(side=tk.LEFT, padx=(0, 8))
+                tk.Label(row, text=f"{eth}:", font=("Arial", 9, "bold"), bg="#f8fafc", fg="#1e293b", width=15, anchor=tk.W).pack(side=tk.LEFT)
+                tk.Label(row, text=f"{pct:.1f}%", font=("Arial", 9), bg="#f8fafc", fg="#475569").pack(side=tk.LEFT)
+
+        refresh_computed_breakdown()
+
+        base_frame = tk.LabelFrame(genetics_main, text=" Base Origins (Root Ancestor Settings) ", font=("Arial", 10, "bold"), padx=10, pady=10, bg="#f8fafc")
+        base_frame.pack(fill=tk.BOTH, expand=True)
+
+        c_frame = tk.Frame(base_frame, bg="#f8fafc")
+        c_frame.pack(fill=tk.X, pady=(0, 10))
+        tk.Label(c_frame, text="Add New Ethnicity:", font=("Arial", 9, "bold"), bg="#f8fafc").pack(side=tk.LEFT)
         new_eth_entry = tk.Entry(c_frame, width=15, font=("Arial", 10))
         new_eth_entry.pack(side=tk.LEFT, padx=5)
 
-        cb_frame = tk.LabelFrame(tab_genetics, text=" Select Origins (Base Profile) ", padx=10, pady=10, bg="#f8fafc")
-        cb_frame.pack(fill=tk.BOTH, expand=True, padx=15, pady=10)
+        cb_container = tk.Frame(base_frame, bg="#f8fafc")
+        cb_container.pack(fill=tk.BOTH, expand=True)
 
         vars_dict = {}
 
@@ -991,21 +1198,23 @@ class AncestryApp:
             if clr[1]:
                 self.ethnicity_colors[ethnicity] = clr[1]
                 render_checkboxes()
+                refresh_computed_breakdown()
+
+        def update_computed_preview():
+            node.base_ethnicities = [eth for eth, var in vars_dict.items() if var.get()]
+            self.calculate_inheritance()
+            refresh_computed_breakdown()
 
         def render_checkboxes():
-            for widget in cb_frame.winfo_children(): widget.destroy()
+            for widget in cb_container.winfo_children(): widget.destroy()
             vars_dict.clear()
             for idx, eth in enumerate(self.ethnicity_options):
                 var = tk.BooleanVar(value=(eth in node.base_ethnicities))
                 vars_dict[eth] = var
                 r, c = idx // 2, (idx % 2) * 2
-                tk.Checkbutton(cb_frame, text=eth, variable=var, font=("Arial", 9), bg="#f8fafc").grid(row=r, column=c,
-                                                                                                       sticky=tk.W,
-                                                                                                       padx=(5, 2),
-                                                                                                       pady=3)
-                lbl = tk.Label(cb_frame, bg=self.ethnicity_colors.get(eth, "#cbd5e1"), width=3, relief=tk.RAISED,
-                               cursor="hand2")
-                lbl.grid(row=r, column=c + 1, sticky=tk.W, padx=(0, 15))
+                tk.Checkbutton(cb_container, text=eth, variable=var, font=("Arial", 9), bg="#f8fafc", command=update_computed_preview).grid(row=r, column=c, sticky=tk.W, padx=(5, 2), pady=3)
+                lbl = tk.Label(cb_container, bg=self.ethnicity_colors.get(eth, "#cbd5e1"), width=3, relief=tk.RAISED, cursor="hand2")
+                lbl.grid(row=r, column=c+1, sticky=tk.W, padx=(0, 15))
                 lbl.bind("<Button-1>", lambda e, e_name=eth: pick_edit_color(e_name))
 
         def add_eth():
@@ -1016,13 +1225,12 @@ class AncestryApp:
                 self.ethnicity_colors[new_eth] = clr
                 new_eth_entry.delete(0, tk.END)
                 render_checkboxes()
-                f_entries[4]['values'] = ["None"] + self.ethnicity_options
-                m_entries[4]['values'] = ["None"] + self.ethnicity_options
+                update_computed_preview()
 
         tk.Button(c_frame, text="Add", command=add_eth, bg="#cbd5e1", font=("Arial", 9, "bold")).pack(side=tk.LEFT)
         render_checkboxes()
 
-        # --- TAB 3: TIMELINE & LOCATIONS ---
+        # --- TAB 3: TIMELINE MAP DATA ---
         loc_top = tk.Frame(tab_timeline, bg="#f8fafc")
         loc_top.pack(fill=tk.X, padx=15, pady=15)
 
@@ -1030,8 +1238,7 @@ class AncestryApp:
         loc_year_entry = tk.Entry(loc_top, width=8, font=("Arial", 10))
         loc_year_entry.pack(side=tk.LEFT, padx=(5, 15))
 
-        tk.Label(loc_top, text="Location (e.g. Baltimore, MD):", font=("Arial", 9, "bold"), bg="#f8fafc").pack(
-            side=tk.LEFT)
+        tk.Label(loc_top, text="Location:", font=("Arial", 9, "bold"), bg="#f8fafc").pack(side=tk.LEFT)
         loc_place_entry = tk.Entry(loc_top, width=20, font=("Arial", 10))
         loc_place_entry.pack(side=tk.LEFT, padx=(5, 10))
 
@@ -1042,17 +1249,17 @@ class AncestryApp:
             loc_list.delete(0, tk.END)
             node.locations.sort(key=lambda x: x['year'])
             for loc in node.locations:
-                loc_list.insert(tk.END,
-                                f"{loc['year']} - {loc['place']} (Lat: {loc['lat']:.2f}, Lon: {loc['lon']:.2f})")
+                l_type = f"[{loc.get('type', 'event').upper()}] " if 'type' in loc else ""
+                if loc.get('lat') is not None and loc.get('lon') is not None:
+                    loc_list.insert(tk.END,
+                                    f"{l_type}{loc['year']} - {loc['place']} (Lat: {loc['lat']:.2f}, Lon: {loc['lon']:.2f})")
+                else:
+                    p_text = loc['place'] if loc['place'] else "(Date only, no location)"
+                    loc_list.insert(tk.END, f"{l_type}{loc['year']} - {p_text}")
 
         refresh_loc_list()
 
         def add_location():
-            if not GEO_AVAILABLE:
-                messagebox.showerror("Dependency Missing",
-                                     "Please install geopy to use this feature.\nCommand: pip install geopy")
-                return
-
             try:
                 year_val = int(loc_year_entry.get().strip())
             except ValueError:
@@ -1060,7 +1267,22 @@ class AncestryApp:
                 return
 
             place = loc_place_entry.get().strip()
-            if not place: return
+            if not place:
+                node.locations.append({
+                    'year': year_val,
+                    'place': "",
+                    'lat': None,
+                    'lon': None,
+                    'type': 'date'
+                })
+                loc_year_entry.delete(0, tk.END)
+                loc_place_entry.delete(0, tk.END)
+                refresh_loc_list()
+                return
+
+            if not GEO_AVAILABLE:
+                messagebox.showerror("Dependency Missing", "Please install geopy to use this feature.")
+                return
 
             try:
                 location = self.geolocator.geocode(place)
@@ -1069,7 +1291,8 @@ class AncestryApp:
                         'year': year_val,
                         'place': location.address.split(',')[0] + " (" + place + ")",
                         'lat': location.latitude,
-                        'lon': location.longitude
+                        'lon': location.longitude,
+                        'type': 'event'
                     })
                     loc_year_entry.delete(0, tk.END)
                     loc_place_entry.delete(0, tk.END)
@@ -1092,64 +1315,55 @@ class AncestryApp:
         tk.Button(btn_loc_frame, text="Remove Selected", command=remove_location, bg="#ef4444", fg="white",
                   font=("Arial", 9)).pack(side=tk.RIGHT)
 
-        # --- SAVE FUNCTION ---
-        def save_close():
-            old_f, old_m = node.father, node.mother
-            f_n, f_b, f_d, f_l, f_c = f_entries[0].get().strip(), f_entries[1].get().strip(), f_entries[
-                2].get().strip(), f_entries[3].get(), f_entries[4].get()
-            m_n, m_b, m_d, m_l, m_c = m_entries[0].get().strip(), m_entries[1].get().strip(), m_entries[
-                2].get().strip(), m_entries[3].get(), m_entries[4].get()
+        # --- SAVE PROFILE ---
+        def save_profile():
+            node.display_name = bio_name.get().strip()
+            new_b_year = bio_b_year.get().strip()
+            new_b_loc = bio_b_loc.get().strip()
+            new_d_year = bio_d_year.get().strip()
+            new_d_loc = bio_d_loc.get().strip()
 
-            def gen_id(n, b, d, l):
-                if not n: return None
-                if not b and not d and not l: return n
-                b_str = b if b else "?"
-                d_str = "Present" if l else (d if d else "?")
-                return f"{n} ({b_str} - {d_str})"
+            if GEO_AVAILABLE and new_b_loc and (
+                    new_b_loc != getattr(node, 'birth_location', '') or new_b_year != node.birth_year):
+                if new_b_year.isdigit():
+                    loc_data = self.geolocator.geocode(new_b_loc)
+                    if loc_data:
+                        node.locations = [l for l in node.locations if l.get('type') != 'birth']
+                        node.locations.append({
+                            'year': int(new_b_year),
+                            'place': loc_data.address.split(',')[0] + f" ({new_b_loc})",
+                            'lat': loc_data.latitude,
+                            'lon': loc_data.longitude,
+                            'type': 'birth'
+                        })
 
-            new_f_id = gen_id(f_n, f_b, f_d, f_l)
-            new_m_id = gen_id(m_n, m_b, m_d, m_l)
+            if GEO_AVAILABLE and new_d_loc and not bio_living.get() and (
+                    new_d_loc != getattr(node, 'death_location', '') or new_d_year != node.death_year):
+                if new_d_year.isdigit():
+                    loc_data = self.geolocator.geocode(new_d_loc)
+                    if loc_data:
+                        node.locations = [l for l in node.locations if l.get('type') != 'death']
+                        node.locations.append({
+                            'year': int(new_d_year),
+                            'place': loc_data.address.split(',')[0] + f" ({new_d_loc})",
+                            'lat': loc_data.latitude,
+                            'lon': loc_data.longitude,
+                            'type': 'death'
+                        })
 
-            if new_f_id and new_f_id != old_f and new_f_id in self.tree and not messagebox.askyesno("Duplicate",
-                                                                                                    f"Profile '{new_f_id}' exists. Link to it?"): return
-            if new_m_id and new_m_id != old_m and new_m_id in self.tree and not messagebox.askyesno("Duplicate",
-                                                                                                    f"Profile '{new_m_id}' exists. Link to it?"): return
+            node.birth_year = new_b_year
+            node.birth_location = new_b_loc
+            node.death_year = new_d_year
+            node.death_location = new_d_loc
+            node.is_living = bio_living.get()
 
             node.base_ethnicities = [eth for eth, var in vars_dict.items() if var.get()]
-
-            def update_parent(old_id, new_id, p_n, p_b, p_d, p_l, p_c, is_father):
-                if old_id != new_id:
-                    if new_id and new_id not in self.tree:
-                        if old_id and old_id in self.tree:
-                            p_node = self.tree.pop(old_id)
-                            p_node.name, p_node.display_name, p_node.birth_year, p_node.death_year, p_node.is_living = new_id, p_n, p_b, "" if p_l else p_d, p_l
-                            self.tree[new_id] = p_node
-                            for n in self.tree.values():
-                                if n.father == old_id: n.father = new_id
-                                if n.mother == old_id: n.mother = new_id
-                        else:
-                            self.tree[new_id] = AncestorNode(name=new_id, display_name=p_n, birth_year=p_b,
-                                                             death_year="" if p_l else p_d, is_living=p_l)
-                    if is_father:
-                        node.father = new_id
-                    else:
-                        node.mother = new_id
-                else:
-                    if new_id and new_id in self.tree:
-                        p_node = self.tree[new_id]
-                        p_node.display_name, p_node.birth_year, p_node.death_year, p_node.is_living = p_n, p_b, "" if p_l else p_d, p_l
-
-                if new_id and new_id in self.tree and p_c != "None":
-                    self.tree[new_id].base_ethnicities = [p_c]
-
-            update_parent(old_f, new_f_id, f_n, f_b, f_d, f_l, f_c, True)
-            update_parent(old_m, new_m_id, m_n, m_b, m_d, m_l, m_c, False)
 
             dialog.destroy()
             self.refresh_plot()
 
-        tk.Button(dialog, text="Save & Update Tree", command=save_close, bg="#10b981", fg="white",
-                  font=("Arial", 11, "bold"), width=20, height=2).pack(pady=(5, 15))
+        tk.Button(dialog, text="Save & Update Profile", command=save_profile, bg="#10b981", fg="white",
+                  font=("Arial", 11, "bold"), height=2).pack(fill=tk.X, padx=20, pady=15)
 
     # ---------------------------------------------------------
     # FILE I/O
@@ -1167,7 +1381,10 @@ class AncestryApp:
             data["nodes"][name] = {
                 "name": n.name, "display_name": n.display_name, "birth_year": n.birth_year,
                 "death_year": n.death_year, "is_living": n.is_living, "base_ethnicities": n.base_ethnicities,
-                "father": n.father, "mother": n.mother, "locations": n.locations
+                "father": n.father, "mother": n.mother, "locations": n.locations,
+                "signifiers": getattr(n, 'signifiers', []),
+                "birth_location": getattr(n, 'birth_location', ''),
+                "death_location": getattr(n, 'death_location', '')
             }
 
         with open(file_path, 'w') as f:
@@ -1186,12 +1403,16 @@ class AncestryApp:
         self.ethnicity_colors = raw.get("ethnicity_colors", {})
 
         for name, d in raw.get("nodes", {}).items():
-            self.tree[name] = AncestorNode(
+            node = AncestorNode(
                 name=d["name"], display_name=d.get("display_name", d["name"]),
                 birth_year=d.get("birth_year", ""), death_year=d.get("death_year", ""),
                 is_living=d.get("is_living", False), base_ethnicities=d.get("base_ethnicities", []),
                 father=d.get("father"), mother=d.get("mother"), locations=d.get("locations", [])
             )
+            node.signifiers = d.get("signifiers", [])
+            node.birth_location = d.get("birth_location", "")
+            node.death_location = d.get("death_location", "")
+            self.tree[name] = node
 
         if from_welcome:
             self.welcome_frame.destroy()
